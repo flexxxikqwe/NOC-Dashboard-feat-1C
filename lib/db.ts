@@ -5,7 +5,6 @@ import path from 'node:path';
 const DB_FILE_PATH = path.resolve(process.cwd(), 'storage.db');
 
 declare global {
-  // eslint-disable-next-line no-var
   var __nocSqliteInstance: Database.Database | undefined;
 }
 
