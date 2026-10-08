@@ -1,0 +1,6 @@
+{
+  "name": "Retail NOC Dashboard — 1С POS Telemetry & Incident Monitor",
+  "description": "Система мониторинга кассовых узлов 1С:Предприятие, телеметрии оборудования, удаленного доступа (AnyDesk / RuDesktop) и инцидентов.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
