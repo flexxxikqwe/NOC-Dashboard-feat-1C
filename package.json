@@ -13,7 +13,6 @@
     "@google/genai": "^2.4.0",
     "@hookform/resolvers": "^5.2.1",
     "autoprefixer": "^10.4.21",
-    "better-sqlite3": "^13.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.553.0",
@@ -27,7 +26,6 @@
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.11",
     "@tailwindcss/typography": "^0.5.19",
-    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

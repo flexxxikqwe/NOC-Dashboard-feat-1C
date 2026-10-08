@@ -1,11 +1,25 @@
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
 import path from 'node:path';
 
 const DB_FILE_PATH = path.resolve(process.cwd(), 'storage.db');
 
+export interface StatementWrapper<T = unknown> {
+  all(...params: unknown[]): T[];
+  get(...params: unknown[]): T | undefined;
+  run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
+}
+
+export interface NocDatabase {
+  raw: DatabaseSync;
+  prepare<T = unknown>(sql: string): StatementWrapper<T>;
+  exec(sql: string): void;
+  pragma(query: string): unknown;
+  transaction<T extends (...args: any[]) => any>(fn: T): T;
+}
+
 declare global {
-  var __nocSqliteInstance: Database.Database | undefined;
+  var __nocSqliteInstance: NocDatabase | undefined;
 }
 
 export function generateWorkplaceId(shopName: string, workplaceName: string): string {
@@ -26,7 +40,7 @@ export function generateErrorHash(param1: string, param2: string, param3?: strin
   return crypto.createHash('sha256').update(normalizedPayload, 'utf8').digest('hex');
 }
 
-export function initializeSchema(database: Database.Database): void {
+export function initializeSchema(database: NocDatabase): void {
   database.pragma('journal_mode = WAL');
   database.pragma('foreign_keys = ON');
 
@@ -65,8 +79,8 @@ export function initializeSchema(database: Database.Database): void {
 
   // Migration check: in case workplaces was created previously without system_info_json
   const workplaceColumns = database
-    .prepare("PRAGMA table_info('workplaces')")
-    .all() as Array<{ name: string }>;
+    .prepare<{ name: string }>("PRAGMA table_info('workplaces')")
+    .all();
   const hasSystemInfo = workplaceColumns.some((col) => col.name === 'system_info_json');
   if (!hasSystemInfo) {
     database.exec('ALTER TABLE workplaces ADD COLUMN system_info_json TEXT;');
@@ -74,21 +88,77 @@ export function initializeSchema(database: Database.Database): void {
 
   // Migration check: in case incidents was created previously without severity
   const incidentColumns = database
-    .prepare("PRAGMA table_info('incidents')")
-    .all() as Array<{ name: string }>;
+    .prepare<{ name: string }>("PRAGMA table_info('incidents')")
+    .all();
   const hasSeverity = incidentColumns.some((col) => col.name === 'severity');
   if (!hasSeverity) {
     database.exec("ALTER TABLE incidents ADD COLUMN severity TEXT NOT NULL DEFAULT 'ERROR';");
   }
 }
 
-function createDatabaseConnection(): Database.Database {
-  const instance = new Database(DB_FILE_PATH);
-  initializeSchema(instance);
-  return instance;
+function sanitizeParams(params: unknown[]): unknown[] {
+  return params.map((p) => (p === undefined ? null : p));
 }
 
-export const db: Database.Database =
+function createDatabaseConnection(): NocDatabase {
+  const rawDb = new DatabaseSync(DB_FILE_PATH);
+
+  const dbWrapper: NocDatabase = {
+    raw: rawDb,
+    prepare<T = unknown>(sql: string): StatementWrapper<T> {
+      const stmt = rawDb.prepare(sql);
+      return {
+        all(...params: unknown[]): T[] {
+          return stmt.all(...sanitizeParams(params)) as T[];
+        },
+        get(...params: unknown[]): T | undefined {
+          return stmt.get(...sanitizeParams(params)) as T | undefined;
+        },
+        run(...params: unknown[]) {
+          const res = stmt.run(...sanitizeParams(params));
+          return {
+            changes: Number(res.changes ?? 0),
+            lastInsertRowid: res.lastInsertRowid,
+          };
+        },
+      };
+    },
+    exec(sql: string): void {
+      rawDb.exec(sql);
+    },
+    pragma(query: string): unknown {
+      const trimmed = query.trim();
+      const pragmaSql = /^pragma\b/i.test(trimmed) ? trimmed : `PRAGMA ${trimmed};`;
+      if (trimmed.includes('=') || trimmed.toLowerCase() === 'optimize') {
+        rawDb.exec(pragmaSql);
+        return null;
+      }
+      return rawDb.prepare(pragmaSql).all();
+    },
+    transaction<T extends (...args: any[]) => any>(fn: T): T {
+      return ((...args: any[]) => {
+        rawDb.exec('BEGIN');
+        try {
+          const result = fn(...args);
+          rawDb.exec('COMMIT');
+          return result;
+        } catch (error) {
+          try {
+            rawDb.exec('ROLLBACK');
+          } catch {
+            // ignore rollback error
+          }
+          throw error;
+        }
+      }) as T;
+    },
+  };
+
+  initializeSchema(dbWrapper);
+  return dbWrapper;
+}
+
+export const db: NocDatabase =
   globalThis.__nocSqliteInstance ?? createDatabaseConnection();
 
 if (process.env.NODE_ENV !== 'production') {

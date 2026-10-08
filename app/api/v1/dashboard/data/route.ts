@@ -65,7 +65,7 @@ export async function GET() {
       ORDER BY datetime(i.last_occurred_at) DESC
     `);
 
-    const incidents = incidentsQuery.all() as DashboardIncidentRow[];
+    const incidents = incidentsQuery.all() as unknown as DashboardIncidentRow[];
 
     // 2. Извлекаем все рабочие места и количество активных инцидентов для каждого
     const workplacesQuery = db.prepare(`
@@ -95,7 +95,7 @@ export async function GET() {
       active_incidents_count: number;
     }
 
-    const rawWorkplaces = workplacesQuery.all() as RawWorkplaceDbRow[];
+    const rawWorkplaces = workplacesQuery.all() as unknown as RawWorkplaceDbRow[];
 
     const workplaces: DashboardWorkplaceRow[] = rawWorkplaces.map((wp) => {
       const lastSeenMs = new Date(wp.last_seen).getTime();
