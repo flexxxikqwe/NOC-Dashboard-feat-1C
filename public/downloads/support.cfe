@@ -1,0 +1,12 @@
+1C_CONFIGURATION_EXTENSION_MOCK_V1_0_0_CFE_BINARY_CONTAINER
+UUID: 7a5f6c8d-3b2e-4f1a-9c8b-5e4d3a2b1c0e
+Package: RetailNocTelemetryAgent
+Vendor: RetailNOC Systems
+Version: 1.0.0
+BuildDate: 2026-10-08T12:00:00Z
+IntegrityChecksum: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+================================================================================
+// 1С:Предприятие 8.3 — Расширение конфигурации "Мониторинг кассовых узлов NOC"
+// Режим совместимости: 8.3.14+
+// Безопасный режим: Да
+// Защита от опасных действий: Отключена для доверенного расширения

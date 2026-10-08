@@ -38,14 +38,14 @@ export default function HomePage() {
           <div>
             <div className="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-3 py-1 rounded-md mb-3">
               <CheckCircle2 className="w-3.5 h-3.5" />
-              Фаза 1 • Шаг 1.2 — Ingestion API Gateway развернут
+              Фаза 2 • Шаг 2.1 — Серверное обслуживание (TTL) и OTA-дистрибуция развернуты
             </div>
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white flex items-center gap-3">
               <Activity className="w-7 h-7 text-emerald-400" />
-              Retail NOC Dashboard — POS Ingestion Gateway
+              Retail NOC Dashboard — Core Monitoring & OTA Hub
             </h1>
             <p className="text-slate-400 text-sm mt-1">
-              Высокопроизводительный прием телеметрии 1С через <code className="text-emerald-300 font-mono">POST /api/v1/telemetry</code> с защитой Payload Guard (64 КБ), Bearer-аутентификацией и авто-дедупликацией в SQLite WAL.
+              Прием телеметрии, защищенный шлюз OTA-обновлений (<code className="text-emerald-300 font-mono">/api/v1/version</code>) и регламентная очистка БД по TTL (<code className="text-sky-300 font-mono">/api/v1/maintenance/cleanup</code>).
             </p>
           </div>
 
