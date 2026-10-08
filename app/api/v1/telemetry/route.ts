@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyBearerToken, MAX_PAYLOAD_BYTES } from '@/lib/auth';
 import db, { generateWorkplaceId, generateErrorHash } from '@/lib/db';
+import { triageIncident } from '@/lib/ai-triage';
 import type { TelemetryPayload, TelemetryResponse } from '@/types/telemetry';
 
 export const dynamic = 'force-dynamic';
@@ -72,11 +73,101 @@ export async function POST(req: NextRequest) {
   const remoteId = body.remote.id ? String(body.remote.id).trim() : null;
   const systemInfoJson = body.system_info ? JSON.stringify(body.system_info) : null;
 
-  // 5. Database operations inside transaction for atomicity and high throughput
+  // 5. Structure incident candidates to triage and persist
+  interface IncidentItemToProcess {
+    errorHash: string;
+    errorType: string;
+    severity: string;
+    rawError: string;
+  }
+
+  const itemsToProcess: IncidentItemToProcess[] = [];
+
+  // 5.1 Extract runtime_errors
+  if (Array.isArray(body.runtime_errors)) {
+    for (const err of body.runtime_errors) {
+      if (!err || typeof err.error_text !== 'string') {
+        continue;
+      }
+      const eventName = err.event ? String(err.event).trim() : 'RuntimeError';
+      const rawErrorText = String(err.error_text).trim();
+      const errorHash = generateErrorHash(eventName, rawErrorText);
+
+      itemsToProcess.push({
+        errorHash,
+        errorType: eventName,
+        severity: 'ERROR',
+        rawError: rawErrorText,
+      });
+    }
+  }
+
+  // 5.2 Extract health_checks
+  if (Array.isArray(body.health_checks)) {
+    for (const check of body.health_checks) {
+      if (!check || !check.id) {
+        continue;
+      }
+      const checkStatus = String(check.status).toUpperCase();
+      if (checkStatus === 'ERROR' || checkStatus === 'WARN') {
+        const checkId = String(check.id).trim();
+        const details = String(check.details || check.name || 'Health check issue').trim();
+        const errorHash = generateErrorHash(`health_check_${checkId}`, details);
+        const severity = checkStatus === 'WARN' ? 'WARN' : 'ERROR';
+
+        itemsToProcess.push({
+          errorHash,
+          errorType: checkId,
+          severity,
+          rawError: details,
+        });
+      }
+    }
+  }
+
+  // 6. Check existing active incidents in SQLite to decide whether AI-Triage is needed
+  // Prepared statements for lookups and mutations
+  const findActiveIncidentStmt = db.prepare(`
+    SELECT id, occurrences_count, ai_diagnosis, ai_actions
+    FROM incidents
+    WHERE workplace_id = ? AND error_hash = ? AND status = 'ACTIVE'
+    LIMIT 1
+  `);
+
+  interface PreparedIncidentAction {
+    item: IncidentItemToProcess;
+    existingId?: number;
+    triage?: { diagnosis: string | null; actions: string | null };
+  }
+
+  const actionsPlan: PreparedIncidentAction[] = [];
+
+  for (const item of itemsToProcess) {
+    const existing = findActiveIncidentStmt.get(workplaceId, item.errorHash) as
+      | { id: number; occurrences_count: number; ai_diagnosis: string | null; ai_actions: string | null }
+      | undefined;
+
+    if (existing) {
+      // Существующий инцидент: инкрементируем счетчик без вызова ИИ
+      actionsPlan.push({
+        item,
+        existingId: existing.id,
+      });
+    } else {
+      // Новый инцидент: вызываем AI-Triage (с кэшированием внутри triageIncident)
+      const triage = await triageIncident(item.errorType, item.rawError, item.errorHash);
+      actionsPlan.push({
+        item,
+        triage,
+      });
+    }
+  }
+
+  // 7. Atomic transaction for database persistence
   let incidentsRecorded = 0;
 
   const ingestTransaction = db.transaction(() => {
-    // 5.1 Upsert workplace
+    // 7.1 Upsert workplace
     const upsertWorkplaceStmt = db.prepare(`
       INSERT INTO workplaces (
         id,
@@ -106,14 +197,6 @@ export async function POST(req: NextRequest) {
       nowIso
     );
 
-    // Statements for incident dedup / insertion
-    const findActiveIncidentStmt = db.prepare(`
-      SELECT id, occurrences_count
-      FROM incidents
-      WHERE workplace_id = ? AND error_hash = ? AND status = 'ACTIVE'
-      LIMIT 1
-    `);
-
     const updateIncidentStmt = db.prepare(`
       UPDATE incidents
       SET occurrences_count = occurrences_count + 1,
@@ -128,78 +211,31 @@ export async function POST(req: NextRequest) {
         error_type,
         severity,
         raw_error,
+        ai_diagnosis,
+        ai_actions,
         status,
         created_at,
         last_occurred_at
-      ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
     `);
 
-    // 5.2 Process runtime_errors
-    if (Array.isArray(body.runtime_errors)) {
-      for (const err of body.runtime_errors) {
-        if (!err || typeof err.error_text !== 'string') {
-          continue;
-        }
-
-        const eventName = err.event ? String(err.event).trim() : 'RuntimeError';
-        const rawErrorText = String(err.error_text).trim();
-        const errorHash = generateErrorHash(eventName, rawErrorText);
-
-        const existing = findActiveIncidentStmt.get(workplaceId, errorHash) as
-          | { id: number; occurrences_count: number }
-          | undefined;
-
-        if (existing) {
-          updateIncidentStmt.run(nowIso, existing.id);
-        } else {
-          insertIncidentStmt.run(
-            workplaceId,
-            errorHash,
-            eventName,
-            'ERROR',
-            rawErrorText,
-            nowIso,
-            nowIso
-          );
-        }
-        incidentsRecorded++;
+    for (const plan of actionsPlan) {
+      if (plan.existingId) {
+        updateIncidentStmt.run(nowIso, plan.existingId);
+      } else {
+        insertIncidentStmt.run(
+          workplaceId,
+          plan.item.errorHash,
+          plan.item.errorType,
+          plan.item.severity,
+          plan.item.rawError,
+          plan.triage?.diagnosis ?? null,
+          plan.triage?.actions ?? null,
+          nowIso,
+          nowIso
+        );
       }
-    }
-
-    // 5.3 Process health_checks
-    if (Array.isArray(body.health_checks)) {
-      for (const check of body.health_checks) {
-        if (!check || !check.id) {
-          continue;
-        }
-
-        const checkStatus = String(check.status).toUpperCase();
-        if (checkStatus === 'ERROR' || checkStatus === 'WARN') {
-          const checkId = String(check.id).trim();
-          const details = String(check.details || check.name || 'Health check issue').trim();
-          const errorHash = generateErrorHash(`health_check_${checkId}`, details);
-          const severity = checkStatus === 'WARN' ? 'WARN' : 'ERROR';
-
-          const existing = findActiveIncidentStmt.get(workplaceId, errorHash) as
-            | { id: number; occurrences_count: number }
-            | undefined;
-
-          if (existing) {
-            updateIncidentStmt.run(nowIso, existing.id);
-          } else {
-            insertIncidentStmt.run(
-              workplaceId,
-              errorHash,
-              checkId,
-              severity,
-              details,
-              nowIso,
-              nowIso
-            );
-          }
-          incidentsRecorded++;
-        }
-      }
+      incidentsRecorded++;
     }
   });
 
@@ -213,7 +249,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 6. Directive Bus response
+  // 8. Directive Bus response
   const responseData: TelemetryResponse = {
     success: true,
     workplace_id: workplaceId,
