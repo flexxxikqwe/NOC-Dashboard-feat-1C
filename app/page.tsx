@@ -147,7 +147,14 @@ export default function NocDashboardPage() {
   // Загрузка текущего профиля пользователя
   useEffect(() => {
     fetch('/api/v1/auth/me', { cache: 'no-store' })
-      .then((res) => (res.ok ? res.json() : null))
+      .then((res) => {
+        if (res.status === 403) {
+          // Инженер заблокирован при активном аварийном режиме (Kill Switch)
+          window.location.href = '/login?reason=kill_switch';
+          return null;
+        }
+        return res.ok ? res.json() : null;
+      })
       .then((data) => {
         if (data && data.username) {
           setCurrentUser(data);

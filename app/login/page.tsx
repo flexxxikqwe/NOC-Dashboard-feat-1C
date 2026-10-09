@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Activity, Lock, User, AlertCircle, ArrowRight, Loader2 } from 'lucide-react';
 
@@ -9,7 +9,15 @@ export default function LoginPage() {
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('reason') === 'kill_switch') {
+        return 'Сессия приостановлена: для дежурных инженеров включен аварийный режим сети (Kill Switch).';
+      }
+    }
+    return null;
+  });
   const [remainingAttempts, setRemainingAttempts] = useState<number | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {

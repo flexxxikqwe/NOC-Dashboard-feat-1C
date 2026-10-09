@@ -11,7 +11,7 @@ import {
   SESSION_COOKIE_OPTIONS,
   type UserRole,
 } from '@/lib/session';
-import { getUserByUsername, hashPassword, logAudit } from '@/lib/db';
+import { getUserByUsername, hashPassword, logAudit, isKillSwitchActive } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -104,14 +104,36 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 4. Сброс счетчика блокировок и выдача сессионного токена с ролью
+  // 4. Сброс счетчика неудачных попыток ввода пароля
   resetRateLimit(ip);
+
+  // 5. Проверка статуса Kill-Switch (аварийный режим):
+  // Если аварийный режим активен, вход инженеров (ENGINEER) блокируется с кодом 403 Forbidden,
+  // в то время как администраторы (ADMIN) сохраняют полный доступ к системе.
+  if (authenticatedUser.role === 'ENGINEER' && isKillSwitchActive()) {
+    logAudit(
+      authenticatedUser.username,
+      'LOGIN_BLOCKED',
+      'Попытка входа отклонена: активен аварийный режим сети (Kill Switch)'
+    );
+
+    return NextResponse.json(
+      {
+        error:
+          'Вход для дежурных инженеров заблокирован: активен аварийный режим сети (Kill Switch). Обратитесь к администратору.',
+        killSwitchActive: true,
+      },
+      { status: 403 }
+    );
+  }
+
+  // 6. Выдача сессионного токена с ролью
   const sessionToken = await createSessionToken(
     authenticatedUser.username,
     authenticatedUser.role
   );
 
-  // 5. Запись в журнал аудита
+  // 7. Запись в журнал аудита
   logAudit(
     authenticatedUser.username,
     'LOGIN',
@@ -130,15 +152,8 @@ export async function POST(req: NextRequest) {
     { status: 200 }
   );
 
-  // 6. Определение протокола соединения (HTTPS или HTTP)
-  const forwardedProto = req.headers.get('x-forwarded-proto');
-  const isHttps = forwardedProto === 'https' || req.nextUrl.protocol === 'https:';
-
-  // Установка куки сессии с адаптивным флагом secure
-  response.cookies.set(SESSION_COOKIE_NAME, sessionToken, {
-    ...SESSION_COOKIE_OPTIONS,
-    secure: isHttps,
-  });
+  // 8. Установка сессионной куки (чистый production-стек: SameSite: 'lax', secure: process.env.NODE_ENV === 'production')
+  response.cookies.set(SESSION_COOKIE_NAME, sessionToken, SESSION_COOKIE_OPTIONS);
 
   return response;
 }

@@ -20,7 +20,7 @@ export const SESSION_COOKIE_OPTIONS = {
   sameSite: 'lax' as const,
   path: '/',
   maxAge: SESSION_MAX_AGE_SECONDS,
-  secure: false, // Базовое значение, динамически переопределяется по протоколу HTTPS
+  secure: process.env.NODE_ENV === 'production',
 };
 
 const DEFAULT_SECRET = 'noc-dashboard-session-secret-salt-2026-production';
