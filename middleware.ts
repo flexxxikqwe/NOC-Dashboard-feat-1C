@@ -17,18 +17,26 @@ export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // 1. Публичные маршруты (доступны без авторизации)
+  // Включает:
+  // - /login (страница входа)
+  // - /api/v1/auth/login, /api/v1/auth/logout
+  // - /api/v1/telemetry (прием телеметрии от касс 1С через Bearer токен)
+  // - /api/v1/version (проверка версии и доступности)
+  // - /api/v1/maintenance/cleanup (регламентная очистка через Bearer токен)
+  // - /downloads/* (файлы агента и расширения 1С)
   const isPublic =
     pathname === '/login' ||
     pathname === '/api/v1/auth/login' ||
     pathname === '/api/v1/auth/logout' ||
     pathname === '/api/v1/telemetry' ||
     pathname === '/api/v1/version' ||
+    pathname === '/api/v1/maintenance/cleanup' ||
     pathname.startsWith('/downloads/') ||
     pathname.startsWith('/_next/') ||
     pathname === '/favicon.ico';
 
   if (isPublic) {
-    // Если пользователь уже авторизован и заходит на /login -> редирект на дашборд /
+    // Если пользователь уже авторизован и заходит на /login -> перенаправляем на главный дашборд /
     if (pathname === '/login') {
       const sessionCookie = req.cookies.get(SESSION_COOKIE_NAME)?.value;
       if (hasValidSessionFormat(sessionCookie)) {

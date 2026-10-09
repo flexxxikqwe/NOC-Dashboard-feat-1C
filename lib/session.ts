@@ -64,8 +64,21 @@ export function safeCompareHex(a: string, b: string): boolean {
 }
 
 /**
+ * Normalizes timestamp from seconds or milliseconds to milliseconds.
+ */
+function normalizeToMilliseconds(rawTimestamp: number): number {
+  // If timestamp has fewer than 11 digits (e.g., 10-digit UNIX timestamp in seconds like ~1.7e9),
+  // multiply by 1000 to convert to milliseconds.
+  if (rawTimestamp < 100000000000) {
+    return rawTimestamp * 1000;
+  }
+  return rawTimestamp;
+}
+
+/**
  * Lightweight synchronous check for token structure and expiration.
  * Safe for Edge Runtime middleware without heavy cryptographic operations.
+ * Handles timestamps in both milliseconds and seconds.
  */
 export function hasValidSessionFormat(token: string | null | undefined): boolean {
   if (!token || typeof token !== 'string') {
@@ -76,12 +89,17 @@ export function hasValidSessionFormat(token: string | null | undefined): boolean
 
   // 4-part token: username.role.expiresAt.signature
   if (parts.length === 4) {
-    const [username, role, expiresAtStr, signatureHex] = parts;
-    if (!username || (role !== 'ADMIN' && role !== 'ENGINEER')) {
+    const [username, roleRaw, expiresAtStr, signatureHex] = parts;
+    const roleUpper = roleRaw ? roleRaw.toUpperCase() : '';
+    if (!username || (roleUpper !== 'ADMIN' && roleUpper !== 'ENGINEER')) {
       return false;
     }
-    const expiresAt = parseInt(expiresAtStr, 10);
-    if (Number.isNaN(expiresAt) || Date.now() > expiresAt) {
+    const rawExpiresAt = parseInt(expiresAtStr, 10);
+    if (Number.isNaN(rawExpiresAt)) {
+      return false;
+    }
+    const expiresAtMs = normalizeToMilliseconds(rawExpiresAt);
+    if (Date.now() > expiresAtMs) {
       return false;
     }
     if (!signatureHex || signatureHex.length !== 64) {
@@ -96,8 +114,12 @@ export function hasValidSessionFormat(token: string | null | undefined): boolean
     if (!username) {
       return false;
     }
-    const expiresAt = parseInt(expiresAtStr, 10);
-    if (Number.isNaN(expiresAt) || Date.now() > expiresAt) {
+    const rawExpiresAt = parseInt(expiresAtStr, 10);
+    if (Number.isNaN(rawExpiresAt)) {
+      return false;
+    }
+    const expiresAtMs = normalizeToMilliseconds(rawExpiresAt);
+    if (Date.now() > expiresAtMs) {
       return false;
     }
     if (!signatureHex || signatureHex.length !== 64) {
@@ -117,8 +139,9 @@ export async function createSessionToken(
   role: UserRole = 'ADMIN',
   maxAgeSeconds = SESSION_MAX_AGE_SECONDS
 ): Promise<string> {
+  const normalizedRole: UserRole = role.toUpperCase() === 'ENGINEER' ? 'ENGINEER' : 'ADMIN';
   const expiresAt = Date.now() + maxAgeSeconds * 1000;
-  const payload = `${username}:${role}:${expiresAt}`;
+  const payload = `${username}:${normalizedRole}:${expiresAt}`;
   const secret = getSecretKey();
   const key = await importHmacKey(secret);
   const signatureBuffer = await crypto.subtle.sign(
@@ -127,12 +150,13 @@ export async function createSessionToken(
     textEncoder.encode(payload)
   );
   const signatureHex = bufferToHex(signatureBuffer);
-  return `${username}.${role}.${expiresAt}.${signatureHex}`;
+  return `${username}.${normalizedRole}.${expiresAt}.${signatureHex}`;
 }
 
 /**
  * Verifies a session token string with HMAC-SHA256 signature check.
  * Supports both 4-part (${username}.${role}.${expiresAt}.${signature}) and 3-part legacy tokens.
+ * Correctly normalizes timestamps whether stored in milliseconds or seconds.
  */
 export async function verifySessionToken(
   token: string | null | undefined
@@ -146,16 +170,21 @@ export async function verifySessionToken(
   // Format: username.role.expiresAt.signature
   if (parts.length === 4) {
     const [username, roleRaw, expiresAtStr, providedSignatureHex] = parts;
-    const expiresAt = parseInt(expiresAtStr, 10);
+    const rawExpiresAt = parseInt(expiresAtStr, 10);
 
-    if (Number.isNaN(expiresAt) || Date.now() > expiresAt) {
+    if (Number.isNaN(rawExpiresAt)) {
       return { valid: false };
     }
 
-    const role: UserRole = roleRaw === 'ENGINEER' ? 'ENGINEER' : 'ADMIN';
+    const expiresAtMs = normalizeToMilliseconds(rawExpiresAt);
+    if (Date.now() > expiresAtMs) {
+      return { valid: false };
+    }
+
+    const role: UserRole = roleRaw.toUpperCase() === 'ENGINEER' ? 'ENGINEER' : 'ADMIN';
 
     try {
-      const payload = `${username}:${role}:${expiresAt}`;
+      const payload = `${username}:${role}:${expiresAtStr}`;
       const secret = getSecretKey();
       const key = await importHmacKey(secret);
       const computedBuffer = await crypto.subtle.sign(
@@ -178,14 +207,19 @@ export async function verifySessionToken(
   // Legacy format: username.expiresAt.signature
   if (parts.length === 3) {
     const [username, expiresAtStr, providedSignatureHex] = parts;
-    const expiresAt = parseInt(expiresAtStr, 10);
+    const rawExpiresAt = parseInt(expiresAtStr, 10);
 
-    if (Number.isNaN(expiresAt) || Date.now() > expiresAt) {
+    if (Number.isNaN(rawExpiresAt)) {
+      return { valid: false };
+    }
+
+    const expiresAtMs = normalizeToMilliseconds(rawExpiresAt);
+    if (Date.now() > expiresAtMs) {
       return { valid: false };
     }
 
     try {
-      const payload = `${username}:${expiresAt}`;
+      const payload = `${username}:${expiresAtStr}`;
       const secret = getSecretKey();
       const key = await importHmacKey(secret);
       const computedBuffer = await crypto.subtle.sign(
