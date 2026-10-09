@@ -15,6 +15,7 @@ export interface DashboardIncidentRow {
   ai_actions: string | null;
   occurrences_count: number;
   status: string;
+  resolved_at: string | null;
   created_at: string;
   last_occurred_at: string;
   shop_name: string;
@@ -40,7 +41,7 @@ export async function GET() {
     const now = Date.now();
     const ONLINE_THRESHOLD_MS = 15 * 60 * 1000; // 15 минут
 
-    // 1. Извлекаем активные инциденты со связью с рабочими местами
+    // 1. Извлекаем инциденты (все активные + история за последние 14 дней)
     const incidentsQuery = db.prepare(`
       SELECT 
         i.id,
@@ -53,6 +54,7 @@ export async function GET() {
         i.ai_actions,
         i.occurrences_count,
         i.status,
+        i.resolved_at,
         i.created_at,
         i.last_occurred_at,
         w.shop_name,
@@ -61,8 +63,11 @@ export async function GET() {
         w.remote_id
       FROM incidents i
       JOIN workplaces w ON i.workplace_id = w.id
-      WHERE i.status = 'ACTIVE'
-      ORDER BY datetime(i.last_occurred_at) DESC
+      WHERE i.status = 'ACTIVE' OR datetime(i.last_occurred_at) >= datetime('now', '-14 days')
+      ORDER BY 
+        (CASE WHEN i.status = 'ACTIVE' THEN 0 ELSE 1 END),
+        datetime(i.last_occurred_at) DESC
+      LIMIT 200
     `);
 
     const incidents = incidentsQuery.all() as unknown as DashboardIncidentRow[];

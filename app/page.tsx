@@ -22,6 +22,7 @@ import {
   Filter,
   FileText,
   ArrowRight,
+  History,
 } from 'lucide-react';
 import type { DashboardIncidentRow, DashboardWorkplaceRow } from '@/app/api/v1/dashboard/data/route';
 
@@ -29,7 +30,19 @@ const SUPPORT_PASSWORD = 'SuperSupportPass2026!';
 const REFRESH_INTERVAL_SECONDS = 20;
 
 /**
- * Утилита форматирования времени относительно текущего момента:
+ * Склонение русских существительных по числам
+ */
+function pluralizeRu(count: number, one: string, twoToFour: string, many: string): string {
+  const abs = Math.abs(count) % 100;
+  const rem = abs % 10;
+  if (abs > 10 && abs < 20) return many;
+  if (rem > 1 && rem < 5) return twoToFour;
+  if (rem === 1) return one;
+  return many;
+}
+
+/**
+ * Форматирование времени относительно текущего момента:
  * - < 10 сек  -> "только что"
  * - < 60 сек  -> "N сек назад"
  * - < 60 мин  -> "N мин назад"
@@ -39,7 +52,7 @@ const REFRESH_INTERVAL_SECONDS = 20;
 function formatRelativeTime(dateString: string | null | undefined): string {
   if (!dateString) return 'нет данных';
   const timestamp = new Date(dateString).getTime();
-  if (isNaN(timestamp)) return 'нет данных';
+  if (Number.isNaN(timestamp)) return 'нет данных';
 
   const diffSec = Math.floor((Date.now() - timestamp) / 1000);
   if (diffSec < 0 || diffSec < 10) return 'только что';
@@ -61,7 +74,7 @@ function formatRelativeTime(dateString: string | null | undefined): string {
 function formatExactTime(dateString: string | null | undefined): string {
   if (!dateString) return 'нет данных';
   const d = new Date(dateString);
-  if (isNaN(d.getTime())) return 'нет данных';
+  if (Number.isNaN(d.getTime())) return 'нет данных';
   return d.toLocaleString('ru-RU');
 }
 
@@ -75,13 +88,15 @@ export default function NocDashboardPage() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [resolvingIds, setResolvingIds] = useState<Set<number>>(new Set());
 
-  // Состояние подтверждения закрытия инцидента
+  // Состояние подтверждения закрытия инцидента («Починено»)
   const [incidentToResolve, setIncidentToResolve] = useState<DashboardIncidentRow | null>(null);
 
-  // Состояние инспектора сбоев выбранного магазина (UX Drill-Down)
+  // Состояние инспектора точки («Досье магазина» — UX Drill-Down + Audit Trail)
   const [inspectedShopName, setInspectedShopName] = useState<string | null>(null);
+  const [inspectedModalFilter, setInspectedModalFilter] = useState<'ALL' | 'ACTIVE' | 'RESOLVED'>('ALL');
 
   // Фильтры во вкладке «Лента инцидентов»
+  const [incidentStatusFilter, setIncidentStatusFilter] = useState<'ALL' | 'ACTIVE' | 'RESOLVED'>('ACTIVE');
   const [incidentSearchQuery, setIncidentSearchQuery] = useState('');
   const [selectedShopFilter, setSelectedShopFilter] = useState('ALL');
 
@@ -99,7 +114,7 @@ export default function NocDashboardPage() {
         setWorkplaces(data.workplaces || []);
       }
     } catch (err) {
-      console.error('Failed to load NOC dashboard data', err);
+      console.error('Не удалось загрузить данные NOC дашборда', err);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -119,7 +134,7 @@ export default function NocDashboardPage() {
           setWorkplaces(data.workplaces || []);
         }
       } catch (err) {
-        console.error('Failed to load NOC dashboard data', err);
+        console.error('Не удалось загрузить данные NOC дашборда', err);
       } finally {
         if (!ignore) {
           setLoading(false);
@@ -134,7 +149,7 @@ export default function NocDashboardPage() {
     };
   }, []);
 
-  // Таймер автообновления
+  // Автообновление по таймеру
   useEffect(() => {
     const timer = setInterval(() => {
       setCountdown((prev) => {
@@ -149,7 +164,7 @@ export default function NocDashboardPage() {
     return () => clearInterval(timer);
   }, [fetchData]);
 
-  // Закрытие модальных окон по клавише Escape
+  // Закрытие модальных окон по Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -164,7 +179,7 @@ export default function NocDashboardPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [incidentToResolve, inspectedShopName]);
 
-  // Копирование в буфер обмена с временной индикацией
+  // Копирование в буфер обмена
   const copyToClipboard = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
     setCopiedKey(key);
@@ -178,8 +193,32 @@ export default function NocDashboardPage() {
     setResolvingIds((prev) => new Set(prev).add(incidentId));
     setIncidentToResolve(null);
 
-    // Оптимистичное удаление из локального стейта
-    setIncidents((prev) => prev.filter((item) => item.id !== incidentId));
+    const nowIso = new Date().toISOString();
+
+    // Оптимистичное обновление статуса в локальном стейте
+    setIncidents((prev) =>
+      prev.map((item) =>
+        item.id === incidentId
+          ? { ...item, status: 'RESOLVED', resolved_at: nowIso }
+          : item
+      )
+    );
+
+    // Снижаем счетчик активных сбоев кассы
+    const target = incidents.find((i) => i.id === incidentId);
+    if (target) {
+      setWorkplaces((prev) =>
+        prev.map((wp) => {
+          if (wp.id === target.workplace_id) {
+            return {
+              ...wp,
+              active_incidents_count: Math.max(0, wp.active_incidents_count - 1),
+            };
+          }
+          return wp;
+        })
+      );
+    }
 
     try {
       const res = await fetch(`/api/v1/incidents/${incidentId}/resolve`, {
@@ -199,21 +238,40 @@ export default function NocDashboardPage() {
     }
   };
 
-  // Список уникальных магазинов с активными сбоями для выпадающего списка
+  // Подсчет активных инцидентов
+  const activeIncidents = useMemo(() => {
+    return incidents.filter((i) => i.status === 'ACTIVE');
+  }, [incidents]);
+
+  const resolvedIncidents = useMemo(() => {
+    return incidents.filter((i) => i.status === 'RESOLVED');
+  }, [incidents]);
+
+  // Список уникальных магазинов с активными сбоями для фильтра
   const incidentShopOptions = useMemo(() => {
-    const countsMap = new Map<string, number>();
+    const countsMap = new Map<string, { active: number; total: number }>();
     for (const inc of incidents) {
-      countsMap.set(inc.shop_name, (countsMap.get(inc.shop_name) || 0) + 1);
+      const cur = countsMap.get(inc.shop_name) || { active: 0, total: 0 };
+      cur.total += 1;
+      if (inc.status === 'ACTIVE') cur.active += 1;
+      countsMap.set(inc.shop_name, cur);
     }
     return Array.from(countsMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [incidents]);
 
-  // Фильтрация инцидентов на лету в основной ленте
+  // Фильтрация инцидентов в основной ленте
   const filteredIncidents = useMemo(() => {
     return incidents.filter((inc) => {
+      // 1. Фильтр статуса
+      if (incidentStatusFilter === 'ACTIVE' && inc.status !== 'ACTIVE') return false;
+      if (incidentStatusFilter === 'RESOLVED' && inc.status !== 'RESOLVED') return false;
+
+      // 2. Фильтр по магазину
       if (selectedShopFilter !== 'ALL' && inc.shop_name !== selectedShopFilter) {
         return false;
       }
+
+      // 3. Поисковый запрос
       if (incidentSearchQuery.trim()) {
         const q = incidentSearchQuery.toLowerCase().trim();
         const matchesShop = inc.shop_name.toLowerCase().includes(q);
@@ -227,17 +285,32 @@ export default function NocDashboardPage() {
       }
       return true;
     });
-  }, [incidents, selectedShopFilter, incidentSearchQuery]);
+  }, [incidents, incidentStatusFilter, selectedShopFilter, incidentSearchQuery]);
 
-  // Инциденты и кассы для выбранного в инспекторе магазина
+  // Данные для открытого досье магазина (UX Drill-Down + 14-Day Audit Trail)
   const inspectedData = useMemo(() => {
-    if (!inspectedShopName) return { shopIncidents: [], shopWorkplaces: [] };
-    const shopIncidents = incidents.filter(
-      (inc) => inc.shop_name === inspectedShopName && inc.status === 'ACTIVE'
-    );
+    if (!inspectedShopName) {
+      return { allIncidents: [], activeIncidents: [], resolvedIncidents: [], shopWorkplaces: [] };
+    }
+    const allIncidents = incidents.filter((inc) => inc.shop_name === inspectedShopName);
+    const activeShopIncidents = allIncidents.filter((inc) => inc.status === 'ACTIVE');
+    const resolvedShopIncidents = allIncidents.filter((inc) => inc.status === 'RESOLVED');
     const shopWorkplaces = workplaces.filter((wp) => wp.shop_name === inspectedShopName);
-    return { shopIncidents, shopWorkplaces };
+
+    return {
+      allIncidents,
+      activeIncidents: activeShopIncidents,
+      resolvedIncidents: resolvedShopIncidents,
+      shopWorkplaces,
+    };
   }, [incidents, workplaces, inspectedShopName]);
+
+  // Отфильтрованные инциденты внутри открытого досье
+  const displayedInspectedIncidents = useMemo(() => {
+    if (inspectedModalFilter === 'ACTIVE') return inspectedData.activeIncidents;
+    if (inspectedModalFilter === 'RESOLVED') return inspectedData.resolvedIncidents;
+    return inspectedData.allIncidents;
+  }, [inspectedData, inspectedModalFilter]);
 
   // Метрики реестра оборудования
   const stats = useMemo(() => {
@@ -271,34 +344,34 @@ export default function NocDashboardPage() {
             </div>
             <div className="flex items-center gap-2">
               <h1 className="text-sm md:text-base font-semibold tracking-tight text-white font-mono">
-                1C_NOC_HUB
+                1C NOC МОНИТОРИНГ
               </h1>
-              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-950/60 border border-emerald-800 text-emerald-400">
-                SYNC_OK
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-950/60 border border-emerald-800 text-emerald-400">
+                СВЯЗЬ В НОРМЕ
               </span>
             </div>
           </div>
 
           <div className="flex items-center gap-2.5 self-end sm:self-center font-mono text-xs">
-            {incidents.length > 0 && (
+            {activeIncidents.length > 0 && (
               <div className="flex items-center gap-1.5 bg-red-950/60 border border-red-800 text-red-300 font-semibold px-2.5 py-1 rounded">
                 <Flame className="w-3.5 h-3.5 text-red-400" />
-                <span>ACTIVE: {incidents.length}</span>
+                <span>АКТИВНЫХ СБОЕВ: {activeIncidents.length}</span>
               </div>
             )}
 
             <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 px-2.5 py-1 rounded text-zinc-400">
               <Clock className="w-3 h-3 text-zinc-500" />
-              <span>TTL {countdown}s</span>
+              <span>ОБНОВЛЕНИЕ {countdown}с</span>
             </div>
 
             <button
               onClick={() => fetchData()}
               disabled={refreshing}
               className="p-1.5 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-800 disabled:opacity-50 cursor-pointer"
-              title="Обновить вручную"
+              title="Обновить данные"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'text-red-400' : ''}`} />
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'text-red-400 animate-spin' : ''}`} />
             </button>
           </div>
         </div>
@@ -307,31 +380,31 @@ export default function NocDashboardPage() {
         <div className="max-w-7xl mx-auto mt-2.5 flex border-b border-zinc-800 text-xs font-mono">
           <button
             onClick={() => setActiveTab('incidents')}
-            className={`pb-2 px-3 border-b-2 flex items-center gap-2 cursor-pointer ${
+            className={`pb-2 px-3 border-b-2 flex items-center gap-2 cursor-pointer transition-colors ${
               activeTab === 'incidents'
                 ? 'border-red-500 text-white font-bold'
                 : 'border-transparent text-zinc-400 hover:text-zinc-200'
             }`}
           >
             <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-            <span>INCIDENTS</span>
-            {incidents.length > 0 && (
-              <span className="px-1 py-0.2 rounded bg-red-950 text-red-300 border border-red-800 text-[10px]">
-                {incidents.length}
+            <span>ИНЦИДЕНТЫ</span>
+            {activeIncidents.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded bg-red-950 text-red-300 border border-red-800 text-[10px] font-bold">
+                {activeIncidents.length}
               </span>
             )}
           </button>
 
           <button
             onClick={() => setActiveTab('assets')}
-            className={`pb-2 px-3 border-b-2 flex items-center gap-2 cursor-pointer ${
+            className={`pb-2 px-3 border-b-2 flex items-center gap-2 cursor-pointer transition-colors ${
               activeTab === 'assets'
                 ? 'border-red-500 text-white font-bold'
                 : 'border-transparent text-zinc-400 hover:text-zinc-200'
             }`}
           >
             <Monitor className="w-3.5 h-3.5 text-zinc-400" />
-            <span>ASSETS ({workplaces.length})</span>
+            <span>ВСЕ МАГАЗИНЫ ({workplaces.length})</span>
           </button>
         </div>
       </header>
@@ -340,8 +413,8 @@ export default function NocDashboardPage() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 md:px-6 py-4">
         {loading ? (
           <div className="flex flex-col items-center justify-center py-20 text-zinc-500 space-y-2 font-mono text-xs">
-            <RefreshCw className="w-6 h-6 text-zinc-400" />
-            <p>CONNECTING_TO_STORAGE_DB...</p>
+            <RefreshCw className="w-6 h-6 text-zinc-400 animate-spin" />
+            <p>ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ...</p>
           </div>
         ) : activeTab === 'incidents' ? (
           /* =========================================================================
@@ -349,71 +422,106 @@ export default function NocDashboardPage() {
              ========================================================================= */
           <div className="space-y-3">
             {/* Панель фильтрации и поиска по инцидентам */}
-            {incidents.length > 0 && (
-              <div className="bg-zinc-900 border border-zinc-800 rounded p-2.5 space-y-2">
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  {/* Поле живого поиска */}
-                  <div className="relative flex-1">
-                    <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-2.5" />
-                    <input
-                      type="text"
-                      placeholder="Поиск по магазину, кассе или ошибке..."
-                      value={incidentSearchQuery}
-                      onChange={(e) => setIncidentSearchQuery(e.target.value)}
-                      className="w-full bg-black border border-zinc-800 rounded pl-8 pr-7 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-zinc-700 font-sans"
-                    />
-                    {incidentSearchQuery && (
-                      <button
-                        onClick={() => setIncidentSearchQuery('')}
-                        className="absolute right-2.5 top-2 text-zinc-500 hover:text-zinc-300 cursor-pointer"
-                        title="Очистить"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Выпадающий список магазинов */}
-                  <div className="relative min-w-[220px]">
-                    <select
-                      value={selectedShopFilter}
-                      onChange={(e) => setSelectedShopFilter(e.target.value)}
-                      className="w-full bg-black border border-zinc-800 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-zinc-700 cursor-pointer appearance-none pr-7 font-mono"
+            <div className="bg-zinc-900 border border-zinc-800 rounded p-2.5 space-y-2.5">
+              <div className="flex flex-col md:flex-row md:items-center gap-2">
+                {/* Поле живого поиска */}
+                <div className="relative flex-1">
+                  <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    placeholder="Поиск по магазину, кассе или тексту ошибки..."
+                    value={incidentSearchQuery}
+                    onChange={(e) => setIncidentSearchQuery(e.target.value)}
+                    className="w-full bg-black border border-zinc-800 rounded pl-8 pr-7 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-zinc-700 font-sans"
+                  />
+                  {incidentSearchQuery && (
+                    <button
+                      onClick={() => setIncidentSearchQuery('')}
+                      className="absolute right-2.5 top-2 text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                      title="Очистить поиск"
                     >
-                      <option value="ALL">ALL_SHOPS ({incidents.length})</option>
-                      {incidentShopOptions.map(([shopName, count]) => (
-                        <option key={shopName} value={shopName}>
-                          {shopName} ({count})
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="w-3.5 h-3.5 text-zinc-500 absolute right-2.5 top-2.5 pointer-events-none" />
-                  </div>
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
 
-                {/* Индикатор результатов и сброс фильтров */}
-                <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400">
+                {/* Выпадающий список магазинов */}
+                <div className="relative min-w-[240px]">
+                  <select
+                    value={selectedShopFilter}
+                    onChange={(e) => setSelectedShopFilter(e.target.value)}
+                    className="w-full bg-black border border-zinc-800 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-zinc-700 cursor-pointer appearance-none pr-7 font-mono"
+                  >
+                    <option value="ALL">Все магазины ({incidents.length})</option>
+                    {incidentShopOptions.map(([shopName, counts]) => (
+                      <option key={shopName} value={shopName}>
+                        {shopName} ({counts.active > 0 ? `${counts.active} активн.` : 'в архиве'})
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-3.5 h-3.5 text-zinc-500 absolute right-2.5 top-2.5 pointer-events-none" />
+                </div>
+              </div>
+
+              {/* Переключатель статуса инцидента и сводка */}
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pt-1 border-t border-zinc-800/80 text-[11px] font-mono">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-zinc-500 mr-1">Статус:</span>
+                  <button
+                    onClick={() => setIncidentStatusFilter('ACTIVE')}
+                    className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
+                      incidentStatusFilter === 'ACTIVE'
+                        ? 'bg-red-950/80 border border-red-800 text-red-300 font-bold'
+                        : 'bg-black border border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    Только активные ({activeIncidents.length})
+                  </button>
+                  <button
+                    onClick={() => setIncidentStatusFilter('ALL')}
+                    className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
+                      incidentStatusFilter === 'ALL'
+                        ? 'bg-zinc-800 border border-zinc-700 text-white font-bold'
+                        : 'bg-black border border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    Все за 14 дней ({incidents.length})
+                  </button>
+                  <button
+                    onClick={() => setIncidentStatusFilter('RESOLVED')}
+                    className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
+                      incidentStatusFilter === 'RESOLVED'
+                        ? 'bg-emerald-950/80 border border-emerald-800 text-emerald-300 font-bold'
+                        : 'bg-black border border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    Решенные ({resolvedIncidents.length})
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-3 text-zinc-400 self-end sm:self-auto">
                   <div className="flex items-center gap-1.5">
                     <Filter className="w-3 h-3 text-zinc-500" />
                     <span>
-                      MATCHED: <strong className="text-white">{filteredIncidents.length}</strong> / {incidents.length}
+                      Найдено: <strong className="text-white">{filteredIncidents.length}</strong> из {incidents.length}
                     </span>
                   </div>
 
-                  {(incidentSearchQuery || selectedShopFilter !== 'ALL') && (
+                  {(incidentSearchQuery || selectedShopFilter !== 'ALL' || incidentStatusFilter !== 'ACTIVE') && (
                     <button
                       onClick={() => {
                         setIncidentSearchQuery('');
                         setSelectedShopFilter('ALL');
+                        setIncidentStatusFilter('ACTIVE');
                       }}
                       className="text-red-400 hover:text-red-300 underline cursor-pointer"
                     >
-                      RESET_FILTERS
+                      Сбросить фильтры
                     </button>
                   )}
                 </div>
               </div>
-            )}
+            </div>
 
             {/* Состояния отображения инцидентов */}
             {incidents.length === 0 ? (
@@ -422,71 +530,102 @@ export default function NocDashboardPage() {
                   <ShieldCheck className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white font-mono">STATUS: NO_ACTIVE_INCIDENTS</h3>
+                  <h3 className="text-sm font-bold text-white font-mono">СТАТУС: НЕТ АКТИВНЫХ СБОЕВ</h3>
                   <p className="text-zinc-500 text-xs mt-0.5">
                     Все кассовые узлы торговой сети функционируют в штатном режиме.
                   </p>
                 </div>
               </div>
             ) : filteredIncidents.length === 0 ? (
-              <div className="bg-zinc-900 border border-zinc-800 rounded p-6 text-center space-y-2">
+              <div className="bg-zinc-900 border border-zinc-800 rounded p-8 text-center space-y-2.5">
                 <AlertCircle className="w-6 h-6 text-zinc-500 mx-auto" />
-                <p className="text-xs text-zinc-400 font-mono">NO_MATCHING_INCIDENTS</p>
+                <p className="text-xs text-zinc-300 font-mono">Инциденты по заданным условиям не найдены</p>
+                <p className="text-[11px] text-zinc-500">
+                  Попробуйте изменить параметры поиска или переключить статус.
+                </p>
                 <button
                   onClick={() => {
                     setIncidentSearchQuery('');
                     setSelectedShopFilter('ALL');
+                    setIncidentStatusFilter('ALL');
                   }}
-                  className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-xs font-mono text-zinc-300 hover:text-white cursor-pointer"
+                  className="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-xs font-mono text-zinc-200 hover:text-white cursor-pointer"
                 >
-                  RESET_SEARCH
+                  Показать все инциденты
                 </button>
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-2.5">
                 {filteredIncidents.map((incident) => {
                   const isResolving = resolvingIds.has(incident.id);
+                  const isResolved = incident.status === 'RESOLVED';
                   const isAnyDesk = incident.remote_type === 'ANYDESK' && Boolean(incident.remote_id);
                   const isRuDesktop = incident.remote_type === 'RUDESKTOP' && Boolean(incident.remote_id);
 
                   return (
                     <article
                       key={incident.id}
-                      className="bg-zinc-900 border border-zinc-800 rounded p-3.5 space-y-2.5"
+                      className={`bg-zinc-900 border rounded p-3.5 space-y-2.5 transition-colors ${
+                        isResolved ? 'border-zinc-800/60 opacity-85' : 'border-zinc-800'
+                      }`}
                     >
                       {/* Шапка карточки */}
                       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 pb-2 border-b border-zinc-800">
                         <div>
-                          <div className="flex items-center gap-1.5 font-mono text-xs">
-                            <span
-                              className={`text-[10px] uppercase font-bold px-1.5 py-0.2 rounded border ${
-                                incident.severity === 'WARN'
-                                  ? 'bg-amber-950/40 border-amber-800/80 text-amber-300'
-                                  : 'bg-red-950/40 border-red-800/80 text-red-300'
-                              }`}
-                            >
-                              {incident.severity || 'ERROR'}
-                            </span>
+                          <div className="flex items-center gap-1.5 font-mono text-xs flex-wrap">
+                            {isResolved ? (
+                              <span className="text-[10px] uppercase font-bold px-1.5 py-0.2 rounded border bg-emerald-950/60 border-emerald-800 text-emerald-300 flex items-center gap-1">
+                                <Check className="w-2.5 h-2.5" />
+                                <span>РЕШЕНО</span>
+                              </span>
+                            ) : (
+                              <span
+                                className={`text-[10px] uppercase font-bold px-1.5 py-0.2 rounded border ${
+                                  incident.severity === 'WARN'
+                                    ? 'bg-amber-950/40 border-amber-800/80 text-amber-300'
+                                    : 'bg-red-950/40 border-red-800/80 text-red-300'
+                                }`}
+                              >
+                                {incident.severity === 'WARN' ? 'ПРЕДУПРЕЖДЕНИЕ' : 'КРИТИЧЕСКАЯ'}
+                              </span>
+                            )}
+
                             <span className="text-zinc-500">#{incident.id}</span>
                             <span className="px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-300 text-[10px]">
-                              OCCURRENCES: {incident.occurrences_count}
+                              {incident.occurrences_count}{' '}
+                              {pluralizeRu(incident.occurrences_count, 'повтор', 'повтора', 'повторов')}
                             </span>
+
+                            {isResolved && incident.resolved_at && (
+                              <span
+                                className="text-[10px] text-emerald-400/90 font-mono"
+                                title={formatExactTime(incident.resolved_at)}
+                              >
+                                • Закрыт: {formatRelativeTime(incident.resolved_at)}
+                              </span>
+                            )}
                           </div>
+
                           <h2 className="text-sm font-bold text-white mt-1">
                             {incident.shop_name} — {incident.workplace_name}
                           </h2>
-                          <p className="text-xs font-mono text-red-300 mt-0.5">
+                          <p
+                            className={`text-xs font-mono mt-0.5 ${
+                              isResolved ? 'text-zinc-400' : 'text-red-300'
+                            }`}
+                          >
                             {incident.error_type}
                           </p>
                         </div>
 
-                        {/* Кнопки быстрого удаленного доступа */}
+                        {/* Кнопки быстрого удаленного доступа и решения */}
                         <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap font-mono text-xs">
                           {isAnyDesk && (
                             <>
                               <a
                                 href={`anydesk://${incident.remote_id}`}
                                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-red-900 hover:bg-red-800 text-white font-semibold border border-red-700"
+                                title="Подключиться через AnyDesk"
                               >
                                 <ExternalLink className="w-3 h-3" />
                                 <span>ANYDESK: {incident.remote_id}</span>
@@ -509,6 +648,7 @@ export default function NocDashboardPage() {
                             <button
                               onClick={() => copyToClipboard(incident.remote_id!, `rudesk-${incident.id}`)}
                               className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 cursor-pointer"
+                              title="Скопировать номер RuDesktop"
                             >
                               {copiedKey === `rudesk-${incident.id}` ? (
                                 <Check className="w-3 h-3 text-emerald-400" />
@@ -521,28 +661,35 @@ export default function NocDashboardPage() {
 
                           {!isAnyDesk && !isRuDesktop && (
                             <span className="text-[11px] text-amber-400 bg-amber-950/30 border border-amber-800/60 px-2 py-0.5 rounded">
-                              NO_REMOTE
+                              НЕТ ANYDESK
                             </span>
                           )}
 
-                          {/* Кнопка открытия подтверждения закрытия */}
-                          <button
-                            onClick={() => setIncidentToResolve(incident)}
-                            disabled={isResolving}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-900 hover:bg-emerald-800 text-emerald-100 font-semibold border border-emerald-700 disabled:opacity-50 cursor-pointer"
-                          >
-                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                            <span>{isResolving ? 'RESOLVING...' : 'RESOLVE'}</span>
-                          </button>
+                          {/* Кнопка закрытия или отметка решено */}
+                          {!isResolved ? (
+                            <button
+                              onClick={() => setIncidentToResolve(incident)}
+                              disabled={isResolving}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-900 hover:bg-emerald-800 text-emerald-100 font-semibold border border-emerald-700 disabled:opacity-50 cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                              <span>{isResolving ? 'СОХРАНЕНИЕ...' : 'ПОЧИНЕНО'}</span>
+                            </button>
+                          ) : (
+                            <div className="inline-flex items-center gap-1 px-2 py-1 rounded bg-zinc-800/80 text-emerald-400 border border-zinc-700 text-[11px]">
+                              <Check className="w-3 h-3" />
+                              <span>РЕШЕНО</span>
+                            </div>
+                          )}
                         </div>
                       </div>
 
-                      {/* Блок AI-Triage (Диагноз и Чеклист) */}
+                      {/* Блок AI-Triage (Диагноз и Рекомендация) */}
                       {incident.ai_diagnosis && (
                         <div className="bg-black border-l-2 border-l-red-500 border border-zinc-800 rounded-r p-2.5 space-y-1 text-xs">
                           <div className="flex items-center gap-1 text-red-400 font-mono font-bold uppercase text-[10px]">
                             <Sparkles className="w-3 h-3" />
-                            <span>AI_TRIAGE_DIAGNOSIS</span>
+                            <span>РЕКОМЕНДАЦИЯ ИИ (AI-TRIAGE)</span>
                           </div>
                           <div className="text-zinc-200 font-medium">
                             {incident.ai_diagnosis}
@@ -557,11 +704,11 @@ export default function NocDashboardPage() {
                         </div>
                       )}
 
-                      {/* Технический сырой стек ошибки */}
+                      {/* Исходный стек ошибки */}
                       <details className="group text-xs">
                         <summary className="cursor-pointer font-mono text-zinc-500 hover:text-zinc-300 flex items-center gap-1 list-none select-none text-[11px]">
                           <ChevronDown className="w-3 h-3 group-open:rotate-180" />
-                          <span>RAW_ERROR_STACK</span>
+                          <span>ИСХОДНЫЙ СТЕК ОШИБКИ</span>
                         </summary>
                         <div className="mt-1.5 p-2 bg-black rounded border border-zinc-800 font-mono text-[11px] text-red-300/80 whitespace-pre-wrap overflow-x-auto">
                           {incident.raw_error}
@@ -571,10 +718,10 @@ export default function NocDashboardPage() {
                       {/* Футер карточки с информативным относительным временем */}
                       <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 pt-0.5">
                         <span title={formatExactTime(incident.created_at)}>
-                          FIRST: {formatRelativeTime(incident.created_at)}
+                          Первое появление: {formatRelativeTime(incident.created_at)}
                         </span>
                         <span title={formatExactTime(incident.last_occurred_at)}>
-                          LAST: {formatRelativeTime(incident.last_occurred_at)}
+                          Последнее: {formatRelativeTime(incident.last_occurred_at)}
                         </span>
                       </div>
                     </article>
@@ -585,30 +732,30 @@ export default function NocDashboardPage() {
           </div>
         ) : (
           /* =========================================================================
-             ВКЛАДКА 2: ВСЕ МАГАЗИНЫ (ASSET DIRECTORY)
+             ВКЛАДКА 2: ВСЕ МАГАЗИНЫ (РЕЕСТР КАСС)
              ========================================================================= */
           <div className="space-y-3">
             {/* Метрики */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
               <div className="bg-zinc-900 border border-zinc-800 p-2.5 rounded">
-                <span className="text-[10px] text-zinc-500 uppercase">TOTAL_ASSETS</span>
+                <span className="text-[10px] text-zinc-500 uppercase">ВСЕГО КАСС</span>
                 <div className="text-lg font-bold text-white mt-0.5">{stats.total}</div>
               </div>
               <div className="bg-zinc-900 border border-zinc-800 p-2.5 rounded">
-                <span className="text-[10px] text-emerald-400 uppercase">ONLINE</span>
+                <span className="text-[10px] text-emerald-400 uppercase">НА СВЯЗИ</span>
                 <div className="text-lg font-bold text-emerald-400 mt-0.5">{stats.online}</div>
               </div>
               <div className="bg-zinc-900 border border-zinc-800 p-2.5 rounded">
-                <span className="text-[10px] text-zinc-400 uppercase">OFFLINE (&gt;15m)</span>
+                <span className="text-[10px] text-zinc-400 uppercase">НЕ В СЕТИ (&gt;15 МИН)</span>
                 <div className="text-lg font-bold text-zinc-300 mt-0.5">{stats.offline}</div>
               </div>
               <div className="bg-zinc-900 border border-zinc-800 p-2.5 rounded">
-                <span className="text-[10px] text-amber-400 uppercase">NO_REMOTE</span>
+                <span className="text-[10px] text-amber-400 uppercase">БЕЗ ANYDESK</span>
                 <div className="text-lg font-bold text-amber-400 mt-0.5">{stats.noRemote}</div>
               </div>
             </div>
 
-            {/* Живой поиск по реестру */}
+            {/* Живой поиск по реестру касс */}
             <div className="relative">
               <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-2.5" />
               <input
@@ -629,7 +776,7 @@ export default function NocDashboardPage() {
               )}
             </div>
 
-            {/* Реестр рабочих мест */}
+            {/* Сетка карточек рабочих мест */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
               {filteredWorkplaces.map((wp) => {
                 const hasRemote = Boolean(wp.remote_id) && wp.remote_type !== 'NONE';
@@ -637,11 +784,14 @@ export default function NocDashboardPage() {
                 return (
                   <div
                     key={wp.id}
-                    onClick={() => setInspectedShopName(wp.shop_name)}
-                    className="bg-zinc-900 border border-zinc-800 rounded p-3 space-y-2 hover:border-zinc-700 flex flex-col justify-between cursor-pointer group"
+                    onClick={() => {
+                      setInspectedShopName(wp.shop_name);
+                      setInspectedModalFilter('ALL');
+                    }}
+                    className="bg-zinc-900 border border-zinc-800 rounded p-3 space-y-2 hover:border-zinc-700 flex flex-col justify-between cursor-pointer group transition-colors"
                   >
                     <div>
-                      {/* Информативный статус контакта и инциденты */}
+                      {/* Информативный статус контакта и бейдж ошибок */}
                       <div className="flex items-center justify-between text-xs font-mono">
                         <div>
                           {wp.is_online ? (
@@ -670,16 +820,20 @@ export default function NocDashboardPage() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setInspectedShopName(wp.shop_name);
+                                setInspectedModalFilter('ACTIVE');
                               }}
                               className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-red-950/80 border border-red-800 text-red-300 font-bold flex items-center gap-1 hover:bg-red-900 cursor-pointer"
                               title="Открыть досье инцидентов"
                             >
                               <Flame className="w-3 h-3 text-red-400" />
-                              <span>{wp.active_incidents_count} ERR</span>
+                              <span>
+                                {wp.active_incidents_count}{' '}
+                                {pluralizeRu(wp.active_incidents_count, 'СБОЙ', 'СБОЯ', 'СБОЕВ')}
+                              </span>
                             </button>
                           ) : (
                             <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-950/40 border border-emerald-800/60 text-emerald-400">
-                              OK
+                              В НОРМЕ
                             </span>
                           )}
 
@@ -687,19 +841,20 @@ export default function NocDashboardPage() {
                             onClick={(e) => {
                               e.stopPropagation();
                               setInspectedShopName(wp.shop_name);
+                              setInspectedModalFilter('ALL');
                             }}
                             className="p-1 text-zinc-500 hover:text-zinc-200 cursor-pointer"
-                            title="Открыть лог инцидентов"
+                            title="Открыть досье магазина"
                           >
                             <FileText className="w-3 h-3" />
                           </button>
                         </div>
                       </div>
 
-                      {/* Название */}
+                      {/* Название магазина и кассы */}
                       <h3 className="font-bold text-white text-xs mt-1.5 group-hover:text-red-300 flex items-center justify-between">
                         <span>{wp.shop_name}</span>
-                        <ArrowRight className="w-3 h-3 opacity-0 group-hover:opacity-100 text-zinc-400" />
+                        <ArrowRight className="w-3 h-3 opacity-0 group-hover:opacity-100 text-zinc-400 transition-opacity" />
                       </h3>
                       <p className="text-[11px] text-zinc-400 font-mono">{wp.workplace_name}</p>
 
@@ -716,6 +871,7 @@ export default function NocDashboardPage() {
                                 <a
                                   href={`anydesk://${wp.remote_id}`}
                                   className="text-red-400 hover:underline flex items-center gap-0.5"
+                                  title="Открыть AnyDesk"
                                 >
                                   {wp.remote_id}
                                   <ExternalLink className="w-2.5 h-2.5" />
@@ -726,7 +882,7 @@ export default function NocDashboardPage() {
                               <button
                                 onClick={() => copyToClipboard(wp.remote_id!, `wp-remote-${wp.id}`)}
                                 className="p-0.5 hover:text-white text-zinc-500 cursor-pointer"
-                                title="Скопировать ID"
+                                title="Скопировать номер"
                               >
                                 {copiedKey === `wp-remote-${wp.id}` ? (
                                   <Check className="w-2.5 h-2.5 text-emerald-400" />
@@ -736,21 +892,21 @@ export default function NocDashboardPage() {
                               </button>
                             </div>
                           ) : (
-                            <span className="text-amber-400 text-[10px]">NONE</span>
+                            <span className="text-amber-400 text-[10px]">НЕТ</span>
                           )}
                         </div>
 
                         {/* Кнопка копирования пароля поддержки */}
                         <div className="flex items-center justify-between pt-0.5 border-t border-zinc-800 text-[10px]">
-                          <span className="text-zinc-500">PASS:</span>
+                          <span className="text-zinc-500">ПАРОЛЬ:</span>
                           <button
                             onClick={() => copyToClipboard(SUPPORT_PASSWORD, `wp-pass-${wp.id}`)}
                             className="inline-flex items-center gap-0.5 text-zinc-400 hover:text-zinc-200 cursor-pointer"
-                            title="Скопировать пароль"
+                            title="Скопировать мастер-пароль"
                           >
                             <Key className="w-2.5 h-2.5 text-amber-400" />
                             <span>
-                              {copiedKey === `wp-pass-${wp.id}` ? 'COPIED' : 'COPY'}
+                              {copiedKey === `wp-pass-${wp.id}` ? 'СКОПИРОВАНО' : 'СКОПИРОВАТЬ'}
                             </span>
                           </button>
                         </div>
@@ -767,7 +923,7 @@ export default function NocDashboardPage() {
                           {Boolean(wp.system_info.ram_gb) && (
                             <span className="px-1 py-0.2 rounded bg-zinc-800 text-zinc-300 flex items-center gap-0.5">
                               <Cpu className="w-2 h-2" />
-                              {String(wp.system_info.ram_gb)}G
+                              {String(wp.system_info.ram_gb)} ГБ
                             </span>
                           )}
                           {Boolean(wp.system_info.os) && (
@@ -781,9 +937,12 @@ export default function NocDashboardPage() {
 
                     <div className="text-[10px] font-mono text-zinc-500 pt-1.5 border-t border-zinc-800 flex items-center justify-between">
                       <span title={formatExactTime(wp.last_seen)}>
-                        SEEN: {formatRelativeTime(wp.last_seen)}
+                        Связь: {formatRelativeTime(wp.last_seen)}
                       </span>
-                      <span className="text-zinc-400 hover:text-white">DETAILS &rarr;</span>
+                      <span className="text-zinc-400 group-hover:text-white flex items-center gap-1">
+                        <span>ДОСЬЕ ТОЧКИ</span>
+                        <span>&rarr;</span>
+                      </span>
                     </div>
                   </div>
                 );
@@ -793,11 +952,11 @@ export default function NocDashboardPage() {
         )}
       </main>
 
-      {/* 4. Модальное окно инспектора сбоев точки («Досье точки» — UX Drill-Down) */}
+      {/* 4. Модальное окно инспектора точки («Досье магазина» — UX Drill-Down + 14-Day Audit Trail) */}
       {inspectedShopName && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 md:p-6 bg-black/85">
           <div
-            className="bg-zinc-900 border border-zinc-700 rounded max-w-3xl w-full max-h-[85vh] flex flex-col overflow-hidden"
+            className="bg-zinc-900 border border-zinc-700 rounded max-w-3xl w-full max-h-[85vh] flex flex-col overflow-hidden shadow-2xl"
             role="dialog"
             aria-modal="true"
           >
@@ -806,26 +965,35 @@ export default function NocDashboardPage() {
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] font-mono uppercase px-1.5 py-0.2 rounded bg-red-950 border border-red-800 text-red-300 font-bold">
-                    SHOP_DOSSIER
+                    ДОСЬЕ МАГАЗИНА
                   </span>
                   <h2 className="text-sm font-bold text-white font-mono">{inspectedShopName}</h2>
                 </div>
                 <div className="flex items-center gap-2 text-[11px] font-mono text-zinc-400 flex-wrap">
-                  <span>WORKPLACES: {inspectedData.shopWorkplaces.length}</span>
+                  <span>Касс: {inspectedData.shopWorkplaces.length}</span>
                   <span>•</span>
                   <span>
-                    INCIDENTS:{' '}
-                    <strong className={inspectedData.shopIncidents.length > 0 ? 'text-red-400' : 'text-emerald-400'}>
-                      {inspectedData.shopIncidents.length}
+                    Активных сбоев:{' '}
+                    <strong
+                      className={
+                        inspectedData.activeIncidents.length > 0 ? 'text-red-400' : 'text-emerald-400'
+                      }
+                    >
+                      {inspectedData.activeIncidents.length}
                     </strong>
                   </span>
+                  <span>•</span>
+                  <span>В архиве (14 дней): {inspectedData.resolvedIncidents.length}</span>
                   <span>•</span>
                   <button
                     onClick={() => copyToClipboard(SUPPORT_PASSWORD, 'inspect-modal-pass')}
                     className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                    title="Скопировать пароль администратора"
                   >
                     <Key className="w-2.5 h-2.5 text-amber-400" />
-                    <span>{copiedKey === 'inspect-modal-pass' ? 'COPIED' : 'SUPPORT_PASS'}</span>
+                    <span>
+                      {copiedKey === 'inspect-modal-pass' ? 'СКОПИРОВАНО' : 'ПАРОЛЬ АДМИНА'}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -839,52 +1007,139 @@ export default function NocDashboardPage() {
               </button>
             </div>
 
+            {/* Панель вкладок аудита внутри досье */}
+            <div className="px-3.5 py-2 bg-zinc-950 border-b border-zinc-800 flex items-center justify-between text-xs font-mono">
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setInspectedModalFilter('ALL')}
+                  className={`px-2.5 py-1 rounded cursor-pointer transition-colors ${
+                    inspectedModalFilter === 'ALL'
+                      ? 'bg-zinc-800 text-white font-bold'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  Все сбои ({inspectedData.allIncidents.length})
+                </button>
+                <button
+                  onClick={() => setInspectedModalFilter('ACTIVE')}
+                  className={`px-2.5 py-1 rounded cursor-pointer transition-colors ${
+                    inspectedModalFilter === 'ACTIVE'
+                      ? 'bg-red-950 text-red-300 border border-red-800 font-bold'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  Активные ({inspectedData.activeIncidents.length})
+                </button>
+                <button
+                  onClick={() => setInspectedModalFilter('RESOLVED')}
+                  className={`px-2.5 py-1 rounded cursor-pointer transition-colors ${
+                    inspectedModalFilter === 'RESOLVED'
+                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-800 font-bold'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  Решенные ({inspectedData.resolvedIncidents.length})
+                </button>
+              </div>
+
+              <div className="text-[10px] text-zinc-500 hidden sm:flex items-center gap-1">
+                <History className="w-3 h-3 text-zinc-500" />
+                <span>Глубина архива: 14 дней</span>
+              </div>
+            </div>
+
             {/* Тело модалки: список инцидентов точки */}
             <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5">
-              {inspectedData.shopIncidents.length === 0 ? (
+              {inspectedData.allIncidents.length === 0 ? (
                 <div className="bg-black border border-zinc-800 rounded p-8 text-center flex flex-col items-center justify-center space-y-2">
                   <div className="w-8 h-8 rounded border border-emerald-800 bg-emerald-950/30 flex items-center justify-center text-emerald-400">
                     <ShieldCheck className="w-4 h-4" />
                   </div>
                   <div>
-                    <h3 className="text-xs font-bold text-white font-mono">STATUS: NO_ACTIVE_INCIDENTS</h3>
+                    <h3 className="text-xs font-bold text-white font-mono">
+                      СТАТУС: СБОЕВ НЕ ЗАФИКСИРОВАНО
+                    </h3>
                     <p className="text-zinc-500 text-[11px] mt-0.5 max-w-sm mx-auto">
-                      Все кассы торговой точки «{inspectedShopName}» работают в штатном режиме.
+                      За последние 14 дней на кассах магазина «{inspectedShopName}» не возникало критических ошибок.
                     </p>
                   </div>
                 </div>
+              ) : displayedInspectedIncidents.length === 0 ? (
+                <div className="bg-black border border-zinc-800 rounded p-6 text-center space-y-1.5 font-mono text-xs">
+                  <p className="text-zinc-400">В этой категории записей не найдено.</p>
+                  <button
+                    onClick={() => setInspectedModalFilter('ALL')}
+                    className="text-red-400 hover:underline text-[11px] cursor-pointer"
+                  >
+                    Показать все записи ({inspectedData.allIncidents.length})
+                  </button>
+                </div>
               ) : (
                 <div className="space-y-2.5">
-                  {inspectedData.shopIncidents.map((incident) => {
+                  {/* Информационный баннер при отсутствии активных сбоев */}
+                  {inspectedData.activeIncidents.length === 0 && inspectedModalFilter !== 'ACTIVE' && (
+                    <div className="bg-emerald-950/40 border border-emerald-800/80 rounded p-2.5 flex items-center gap-2 text-xs font-mono text-emerald-300">
+                      <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>Все текущие проблемы устранены. Ниже показан журнал решенных инцидентов.</span>
+                    </div>
+                  )}
+
+                  {displayedInspectedIncidents.map((incident) => {
                     const isResolving = resolvingIds.has(incident.id);
+                    const isResolved = incident.status === 'RESOLVED';
                     const isAnyDesk = incident.remote_type === 'ANYDESK' && Boolean(incident.remote_id);
                     const isRuDesktop = incident.remote_type === 'RUDESKTOP' && Boolean(incident.remote_id);
 
                     return (
                       <div
                         key={incident.id}
-                        className="bg-black border border-zinc-800 rounded p-3 space-y-2 text-xs"
+                        className={`bg-black border rounded p-3 space-y-2 text-xs transition-colors ${
+                          isResolved ? 'border-zinc-800/70' : 'border-zinc-800'
+                        }`}
                       >
                         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 pb-1.5 border-b border-zinc-800">
                           <div>
-                            <div className="flex items-center gap-1.5 font-mono">
-                              <span
-                                className={`text-[10px] uppercase font-bold px-1.5 py-0.2 rounded border ${
-                                  incident.severity === 'WARN'
-                                    ? 'bg-amber-950/40 border-amber-800/80 text-amber-300'
-                                    : 'bg-red-950/40 border-red-800/80 text-red-300'
-                                }`}
-                              >
-                                {incident.severity || 'ERROR'}
-                              </span>
+                            <div className="flex items-center gap-1.5 font-mono flex-wrap">
+                              {isResolved ? (
+                                <span className="text-[10px] uppercase font-bold px-1.5 py-0.2 rounded border bg-emerald-950/60 border-emerald-800 text-emerald-300 flex items-center gap-1">
+                                  <Check className="w-2.5 h-2.5" />
+                                  <span>РЕШЕНО</span>
+                                </span>
+                              ) : (
+                                <span
+                                  className={`text-[10px] uppercase font-bold px-1.5 py-0.2 rounded border ${
+                                    incident.severity === 'WARN'
+                                      ? 'bg-amber-950/40 border-amber-800/80 text-amber-300'
+                                      : 'bg-red-950/40 border-red-800/80 text-red-300'
+                                  }`}
+                                >
+                                  {incident.severity === 'WARN' ? 'ПРЕДУПРЕЖДЕНИЕ' : 'В РАБОТЕ'}
+                                </span>
+                              )}
+
                               <span className="font-bold text-white">
                                 {incident.workplace_name}
                               </span>
                               <span className="text-zinc-500 text-[10px]">
-                                (x{incident.occurrences_count})
+                                ({incident.occurrences_count}{' '}
+                                {pluralizeRu(incident.occurrences_count, 'повтор', 'повтора', 'повторов')})
                               </span>
+
+                              {isResolved && incident.resolved_at && (
+                                <span
+                                  className="text-[10px] text-emerald-400 font-mono"
+                                  title={formatExactTime(incident.resolved_at)}
+                                >
+                                  • Закрыт: {formatRelativeTime(incident.resolved_at)}
+                                </span>
+                              )}
                             </div>
-                            <p className="text-[11px] font-mono text-red-300 mt-0.5">
+
+                            <p
+                              className={`text-[11px] font-mono mt-0.5 ${
+                                isResolved ? 'text-zinc-400' : 'text-red-300'
+                              }`}
+                            >
                               {incident.error_type}
                             </p>
                           </div>
@@ -907,14 +1162,22 @@ export default function NocDashboardPage() {
                                 <span>RUDESK: {incident.remote_id}</span>
                               </button>
                             )}
-                            <button
-                              onClick={() => setIncidentToResolve(incident)}
-                              disabled={isResolving}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-900 hover:bg-emerald-800 text-emerald-100 font-semibold border border-emerald-700 disabled:opacity-50 cursor-pointer text-[11px]"
-                            >
-                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                              <span>RESOLVE</span>
-                            </button>
+
+                            {!isResolved ? (
+                              <button
+                                onClick={() => setIncidentToResolve(incident)}
+                                disabled={isResolving}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-900 hover:bg-emerald-800 text-emerald-100 font-semibold border border-emerald-700 disabled:opacity-50 cursor-pointer text-[11px]"
+                              >
+                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                <span>{isResolving ? 'СОХРАНЕНИЕ...' : 'ПОЧИНЕНО'}</span>
+                              </button>
+                            ) : (
+                              <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800/80 text-emerald-400 border border-zinc-700 text-[10px]">
+                                <Check className="w-2.5 h-2.5" />
+                                <span>АРХИВ</span>
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -923,7 +1186,7 @@ export default function NocDashboardPage() {
                           <div className="bg-zinc-950 border-l-2 border-l-red-500 border border-zinc-800 rounded-r p-2 space-y-1 text-[11px]">
                             <div className="flex items-center gap-1 text-red-400 font-mono font-bold uppercase text-[10px]">
                               <Sparkles className="w-2.5 h-2.5" />
-                              <span>AI_DIAGNOSIS</span>
+                              <span>РЕКОМЕНДАЦИЯ ИИ</span>
                             </div>
                             <div className="text-zinc-200">{incident.ai_diagnosis}</div>
                             {incident.ai_actions && (
@@ -938,7 +1201,7 @@ export default function NocDashboardPage() {
                         <details className="group text-xs">
                           <summary className="cursor-pointer font-mono text-zinc-500 hover:text-zinc-300 flex items-center gap-1 list-none select-none text-[10px]">
                             <ChevronDown className="w-2.5 h-2.5 group-open:rotate-180" />
-                            <span>RAW_LOG</span>
+                            <span>СТЕК ОШИБКИ</span>
                           </summary>
                           <div className="mt-1 p-2 bg-black rounded border border-zinc-800 font-mono text-[10px] text-red-300/80 whitespace-pre-wrap overflow-x-auto">
                             {incident.raw_error}
@@ -947,10 +1210,10 @@ export default function NocDashboardPage() {
 
                         <div className="text-[9px] font-mono text-zinc-500 flex items-center justify-between pt-0.5">
                           <span title={formatExactTime(incident.created_at)}>
-                            FIRST: {formatRelativeTime(incident.created_at)}
+                            Первое: {formatRelativeTime(incident.created_at)}
                           </span>
                           <span title={formatExactTime(incident.last_occurred_at)}>
-                            LAST: {formatRelativeTime(incident.last_occurred_at)}
+                            Последнее: {formatRelativeTime(incident.last_occurred_at)}
                           </span>
                         </div>
                       </div>
@@ -967,11 +1230,12 @@ export default function NocDashboardPage() {
                   const shopToFilter = inspectedShopName;
                   setInspectedShopName(null);
                   setSelectedShopFilter(shopToFilter);
+                  setIncidentStatusFilter('ALL');
                   setActiveTab('incidents');
                 }}
                 className="inline-flex items-center gap-1 text-red-400 hover:text-red-300 cursor-pointer"
               >
-                <span>OPEN_IN_INCIDENTS_TAB</span>
+                <span>Перейти в ленту инцидентов</span>
                 <ExternalLink className="w-3 h-3" />
               </button>
 
@@ -979,7 +1243,7 @@ export default function NocDashboardPage() {
                 onClick={() => setInspectedShopName(null)}
                 className="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white cursor-pointer"
               >
-                CLOSE
+                Закрыть
               </button>
             </div>
           </div>
@@ -990,7 +1254,7 @@ export default function NocDashboardPage() {
       {incidentToResolve && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85">
           <div
-            className="bg-zinc-900 border border-zinc-700 rounded max-w-sm w-full p-4 space-y-3 font-mono"
+            className="bg-zinc-900 border border-zinc-700 rounded max-w-sm w-full p-4 space-y-3 font-mono shadow-2xl"
             role="dialog"
             aria-modal="true"
           >
@@ -1001,7 +1265,7 @@ export default function NocDashboardPage() {
                 </div>
                 <div>
                   <h3 className="text-xs font-bold text-white uppercase">
-                    CONFIRM_RESOLVE
+                    ПОДТВЕРЖДЕНИЕ ЗАКРЫТИЯ
                   </h3>
                   <p className="text-[10px] text-zinc-500">Снятие инцидента с монитора</p>
                 </div>
@@ -1021,7 +1285,7 @@ export default function NocDashboardPage() {
                 ({incidentToResolve.workplace_name})?
               </p>
               <div className="pt-1.5 border-t border-zinc-800 text-[10px] text-zinc-500">
-                EVENT: <span className="text-red-300">{incidentToResolve.error_type}</span>
+                Сбой: <span className="text-red-300">{incidentToResolve.error_type}</span>
               </div>
             </div>
 
@@ -1031,7 +1295,7 @@ export default function NocDashboardPage() {
                 onClick={() => setIncidentToResolve(null)}
                 className="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white cursor-pointer"
               >
-                CANCEL
+                Отмена
               </button>
               <button
                 type="button"
@@ -1039,7 +1303,7 @@ export default function NocDashboardPage() {
                 className="px-3 py-1 rounded bg-emerald-900 hover:bg-emerald-800 text-emerald-100 font-semibold border border-emerald-700 cursor-pointer flex items-center gap-1"
               >
                 <Check className="w-3 h-3 text-emerald-400" />
-                <span>RESOLVE</span>
+                <span>Починено</span>
               </button>
             </div>
           </div>

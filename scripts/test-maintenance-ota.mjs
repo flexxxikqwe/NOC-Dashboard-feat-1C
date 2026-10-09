@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -18,7 +18,7 @@ async function runMaintenanceOtaTestSuite() {
   console.log(`Base URL: ${BASE_URL}`);
   console.log(`======================================================\n`);
 
-  const db = new Database(DB_FILE_PATH);
+  const db = new DatabaseSync(DB_FILE_PATH);
 
   try {
     // --------------------------------------------------------------------------

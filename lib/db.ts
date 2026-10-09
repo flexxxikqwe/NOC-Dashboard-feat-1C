@@ -42,6 +42,7 @@ export function generateErrorHash(param1: string, param2: string, param3?: strin
 
 export function initializeSchema(database: NocDatabase): void {
   database.pragma('journal_mode = WAL');
+  database.pragma('busy_timeout = 10000');
   database.pragma('foreign_keys = ON');
 
   database.exec(`
@@ -66,6 +67,7 @@ export function initializeSchema(database: NocDatabase): void {
       ai_actions TEXT,
       occurrences_count INTEGER DEFAULT 1,
       status TEXT DEFAULT 'ACTIVE',
+      resolved_at DATETIME,
       created_at DATETIME NOT NULL,
       last_occurred_at DATETIME NOT NULL
     );
@@ -93,6 +95,11 @@ export function initializeSchema(database: NocDatabase): void {
   const hasSeverity = incidentColumns.some((col) => col.name === 'severity');
   if (!hasSeverity) {
     database.exec("ALTER TABLE incidents ADD COLUMN severity TEXT NOT NULL DEFAULT 'ERROR';");
+  }
+
+  const hasResolvedAt = incidentColumns.some((col) => col.name === 'resolved_at');
+  if (!hasResolvedAt) {
+    database.exec("ALTER TABLE incidents ADD COLUMN resolved_at DATETIME;");
   }
 }
 

@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -7,17 +7,20 @@ const DB_FILE_PATH = path.resolve(process.cwd(), 'storage.db');
 function verifyAndInitDatabase() {
   console.log(`[INIT-DB] Connecting to SQLite database at: ${DB_FILE_PATH}`);
 
-  const db = new Database(DB_FILE_PATH);
+  const db = new DatabaseSync(DB_FILE_PATH);
 
   try {
-    const journalModeResult = db.pragma('journal_mode = WAL');
+    db.exec('PRAGMA journal_mode = WAL;');
+    db.exec('PRAGMA busy_timeout = 10000;');
+    db.exec('PRAGMA foreign_keys = ON;');
+
+    const journalModeResult = db.prepare('PRAGMA journal_mode;').all();
     const currentJournalMode =
       Array.isArray(journalModeResult) && journalModeResult.length > 0
         ? journalModeResult[0].journal_mode
-        : String(journalModeResult);
+        : 'unknown';
 
-    db.pragma('foreign_keys = ON');
-    const foreignKeysResult = db.pragma('foreign_keys');
+    const foreignKeysResult = db.prepare('PRAGMA foreign_keys;').all();
     const foreignKeysEnabled =
       Array.isArray(foreignKeysResult) && foreignKeysResult.length > 0
         ? foreignKeysResult[0].foreign_keys === 1
@@ -43,6 +46,7 @@ function verifyAndInitDatabase() {
         workplace_name TEXT NOT NULL,
         remote_type TEXT NOT NULL,
         remote_id TEXT,
+        system_info_json TEXT,
         last_seen DATETIME NOT NULL
       );
 
@@ -51,11 +55,13 @@ function verifyAndInitDatabase() {
         workplace_id TEXT NOT NULL REFERENCES workplaces(id) ON DELETE CASCADE,
         error_hash TEXT NOT NULL,
         error_type TEXT NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'ERROR',
         raw_error TEXT NOT NULL,
         ai_diagnosis TEXT,
         ai_actions TEXT,
         occurrences_count INTEGER DEFAULT 1,
         status TEXT DEFAULT 'ACTIVE',
+        resolved_at DATETIME,
         created_at DATETIME NOT NULL,
         last_occurred_at DATETIME NOT NULL
       );

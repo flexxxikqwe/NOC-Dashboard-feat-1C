@@ -18,13 +18,15 @@ export async function POST(
       );
     }
 
+    const resolvedAt = new Date().toISOString();
     const updateStmt = db.prepare(`
       UPDATE incidents
-      SET status = 'RESOLVED'
+      SET status = 'RESOLVED',
+          resolved_at = ?
       WHERE id = ?
     `);
 
-    const result = updateStmt.run(incidentId);
+    const result = updateStmt.run(resolvedAt, incidentId);
 
     if (result.changes === 0) {
       return NextResponse.json(
