@@ -1,6 +1,6 @@
 /**
  * Session management utility using Web Crypto HMAC-SHA256.
- * Zero external dependencies. Compatible with both Node.js and Edge runtimes.
+ * Zero external dependencies. Fully compatible with Node.js and Edge runtimes.
  */
 import type { NextRequest } from 'next/server';
 
@@ -20,7 +20,7 @@ export const SESSION_COOKIE_OPTIONS = {
   sameSite: 'lax' as const,
   path: '/',
   maxAge: SESSION_MAX_AGE_SECONDS,
-  secure: false, // false для localhost / http preview
+  secure: false, // Базовое значение, динамически переопределяется по протоколу HTTPS
 };
 
 const DEFAULT_SECRET = 'noc-dashboard-session-secret-salt-2026-production';
@@ -50,6 +50,66 @@ function bufferToHex(buffer: ArrayBuffer): string {
 }
 
 /**
+ * Constant-time comparison for hex strings to avoid timing attacks
+ * and prevent buffer length mismatch errors (unlike timingSafeEqual).
+ */
+export function safeCompareHex(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+/**
+ * Lightweight synchronous check for token structure and expiration.
+ * Safe for Edge Runtime middleware without heavy cryptographic operations.
+ */
+export function hasValidSessionFormat(token: string | null | undefined): boolean {
+  if (!token || typeof token !== 'string') {
+    return false;
+  }
+
+  const parts = token.split('.');
+
+  // 4-part token: username.role.expiresAt.signature
+  if (parts.length === 4) {
+    const [username, role, expiresAtStr, signatureHex] = parts;
+    if (!username || (role !== 'ADMIN' && role !== 'ENGINEER')) {
+      return false;
+    }
+    const expiresAt = parseInt(expiresAtStr, 10);
+    if (Number.isNaN(expiresAt) || Date.now() > expiresAt) {
+      return false;
+    }
+    if (!signatureHex || signatureHex.length !== 64) {
+      return false;
+    }
+    return true;
+  }
+
+  // 3-part legacy token: username.expiresAt.signature
+  if (parts.length === 3) {
+    const [username, expiresAtStr, signatureHex] = parts;
+    if (!username) {
+      return false;
+    }
+    const expiresAt = parseInt(expiresAtStr, 10);
+    if (Number.isNaN(expiresAt) || Date.now() > expiresAt) {
+      return false;
+    }
+    if (!signatureHex || signatureHex.length !== 64) {
+      return false;
+    }
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Creates a signed session token: `${username}.${role}.${expiresAt}.${signatureHex}`
  */
 export async function createSessionToken(
@@ -71,7 +131,7 @@ export async function createSessionToken(
 }
 
 /**
- * Verifies a session token string.
+ * Verifies a session token string with HMAC-SHA256 signature check.
  * Supports both 4-part (${username}.${role}.${expiresAt}.${signature}) and 3-part legacy tokens.
  */
 export async function verifySessionToken(
@@ -105,7 +165,7 @@ export async function verifySessionToken(
       );
       const computedSignatureHex = bufferToHex(computedBuffer);
 
-      if (computedSignatureHex !== providedSignatureHex) {
+      if (!safeCompareHex(computedSignatureHex, providedSignatureHex)) {
         return { valid: false };
       }
 
@@ -135,7 +195,7 @@ export async function verifySessionToken(
       );
       const computedSignatureHex = bufferToHex(computedBuffer);
 
-      if (computedSignatureHex !== providedSignatureHex) {
+      if (!safeCompareHex(computedSignatureHex, providedSignatureHex)) {
         return { valid: false };
       }
 

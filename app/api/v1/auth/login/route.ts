@@ -130,8 +130,15 @@ export async function POST(req: NextRequest) {
     { status: 200 }
   );
 
-  // Установка куки сессии с едиными опциями
-  response.cookies.set(SESSION_COOKIE_NAME, sessionToken, SESSION_COOKIE_OPTIONS);
+  // 6. Определение протокола соединения (HTTPS или HTTP)
+  const forwardedProto = req.headers.get('x-forwarded-proto');
+  const isHttps = forwardedProto === 'https' || req.nextUrl.protocol === 'https:';
+
+  // Установка куки сессии с адаптивным флагом secure
+  response.cookies.set(SESSION_COOKIE_NAME, sessionToken, {
+    ...SESSION_COOKIE_OPTIONS,
+    secure: isHttps,
+  });
 
   return response;
 }

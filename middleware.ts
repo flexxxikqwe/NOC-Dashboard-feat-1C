@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifySessionToken, SESSION_COOKIE_NAME } from '@/lib/session';
+import { hasValidSessionFormat, SESSION_COOKIE_NAME } from '@/lib/session';
 
 export const config = {
   matcher: [
@@ -13,11 +13,11 @@ export const config = {
   ],
 };
 
-export async function middleware(req: NextRequest) {
+export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // 1. Публичные маршруты (НЕ блокируются сессией)
-  if (
+  // 1. Публичные маршруты (доступны без авторизации)
+  const isPublic =
     pathname === '/login' ||
     pathname === '/api/v1/auth/login' ||
     pathname === '/api/v1/auth/logout' ||
@@ -25,24 +25,24 @@ export async function middleware(req: NextRequest) {
     pathname === '/api/v1/version' ||
     pathname.startsWith('/downloads/') ||
     pathname.startsWith('/_next/') ||
-    pathname === '/favicon.ico'
-  ) {
+    pathname === '/favicon.ico';
+
+  if (isPublic) {
     // Если пользователь уже авторизован и заходит на /login -> редирект на дашборд /
     if (pathname === '/login') {
       const sessionCookie = req.cookies.get(SESSION_COOKIE_NAME)?.value;
-      const session = await verifySessionToken(sessionCookie);
-      if (session.valid) {
+      if (hasValidSessionFormat(sessionCookie)) {
         return NextResponse.redirect(new URL('/', req.url));
       }
     }
     return NextResponse.next();
   }
 
-  // 2. Проверка сессионной куки для всех защищенных маршрутов
+  // 2. Проверка валидности структуры и срока действия сессионной куки
   const sessionCookie = req.cookies.get(SESSION_COOKIE_NAME)?.value;
-  const session = await verifySessionToken(sessionCookie);
+  const isValid = hasValidSessionFormat(sessionCookie);
 
-  if (!session.valid) {
+  if (!isValid) {
     // Для API запросов возвращаем JSON 401
     if (pathname.startsWith('/api/')) {
       return NextResponse.json(
