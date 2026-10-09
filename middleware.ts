@@ -20,6 +20,7 @@ export async function middleware(req: NextRequest) {
   if (
     pathname === '/login' ||
     pathname === '/api/v1/auth/login' ||
+    pathname === '/api/v1/auth/logout' ||
     pathname === '/api/v1/telemetry' ||
     pathname === '/api/v1/version' ||
     pathname.startsWith('/downloads/') ||

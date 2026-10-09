@@ -13,7 +13,15 @@ export interface SessionData {
 }
 
 export const SESSION_COOKIE_NAME = 'noc_auth_session';
-export const SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60; // 7 дней
+export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 дней
+
+export const SESSION_COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: 'lax' as const,
+  path: '/',
+  maxAge: SESSION_MAX_AGE_SECONDS,
+  secure: false, // false для localhost / http preview
+};
 
 const DEFAULT_SECRET = 'noc-dashboard-session-secret-salt-2026-production';
 const textEncoder = new TextEncoder();

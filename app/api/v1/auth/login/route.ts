@@ -8,7 +8,7 @@ import {
 import {
   createSessionToken,
   SESSION_COOKIE_NAME,
-  SESSION_MAX_AGE_SECONDS,
+  SESSION_COOKIE_OPTIONS,
   type UserRole,
 } from '@/lib/session';
 import { getUserByUsername, hashPassword, logAudit } from '@/lib/db';
@@ -130,16 +130,8 @@ export async function POST(req: NextRequest) {
     { status: 200 }
   );
 
-  // Установка куки сессии (HttpOnly, SameSite=Lax, Secure в проде)
-  response.cookies.set({
-    name: SESSION_COOKIE_NAME,
-    value: sessionToken,
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: SESSION_MAX_AGE_SECONDS,
-  });
+  // Установка куки сессии с едиными опциями
+  response.cookies.set(SESSION_COOKIE_NAME, sessionToken, SESSION_COOKIE_OPTIONS);
 
   return response;
 }

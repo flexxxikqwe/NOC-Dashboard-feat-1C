@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Shield, Lock, User, AlertCircle, Terminal, ArrowRight, Loader2 } from 'lucide-react';
+import { Activity, Lock, User, AlertCircle, ArrowRight, Loader2 } from 'lucide-react';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -36,57 +36,42 @@ export default function LoginPage() {
         return;
       }
 
-      // Успешный вход: переход на главную страницу пульта
-      router.push('/');
-      router.refresh();
+      // Успешный вход: переход на главную страницу панели
+      window.location.href = '/';
     } catch {
-      setErrorMessage('Сетевая ошибка при обращении к серверу авторизации.');
+      setErrorMessage('Сетевая ошибка при обращении к серверу.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-black text-zinc-100 flex flex-col justify-center items-center p-4 selection:bg-red-950 selection:text-red-200">
-      {/* Фоновый индустриальный паттерн */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.15),rgba(255,255,255,0))] pointer-events-none" />
-
-      <div className="w-full max-w-md relative z-10">
-        {/* Заголовок пульта */}
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col justify-center items-center p-4 selection:bg-zinc-800 selection:text-zinc-200">
+      <div className="w-full max-w-sm">
+        {/* Заголовок */}
         <div className="mb-6 text-center">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-lg bg-zinc-900 border border-zinc-800 text-red-500 mb-3 shadow-lg shadow-black/50">
-            <Terminal className="w-6 h-6" />
+          <div className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 mb-3 shadow-sm">
+            <Activity className="w-5 h-5 text-zinc-300" />
           </div>
-          <h1 className="text-xl md:text-2xl font-bold font-mono tracking-tight text-white flex items-center justify-center gap-2">
-            1C NOC CONTROL CENTER
+          <h1 className="text-xl font-semibold tracking-tight text-zinc-100">
+            Мониторинг 1С
           </h1>
-          <p className="text-xs text-zinc-400 mt-1 font-mono">
-            Авторизованный доступ к пульту мониторинга кассовых узлов
+          <p className="text-sm text-zinc-400 mt-1">
+            Вход в панель дежурного инженера
           </p>
         </div>
 
-        {/* Карточка формы авторизации */}
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 shadow-2xl backdrop-blur">
-          {/* Индикатор защищенного контура */}
-          <div className="flex items-center justify-between pb-4 mb-5 border-b border-zinc-800 text-xs font-mono">
-            <div className="flex items-center gap-2 text-zinc-400">
-              <Shield className="w-4 h-4 text-emerald-500" />
-              <span>ЗАЩИЩЕННЫЙ КОНТУР</span>
-            </div>
-            <span className="px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 text-[10px] uppercase font-mono">
-              NOC SEC v1.0
-            </span>
-          </div>
-
+        {/* Карточка формы входа */}
+        <div className="bg-zinc-900/80 border border-zinc-800 rounded-xl p-6 shadow-xl shadow-black/40 backdrop-blur-sm">
           {/* Сообщение об ошибке */}
           {errorMessage && (
-            <div className="mb-5 p-3 rounded bg-red-950/70 border border-red-800 text-red-200 text-xs flex items-start gap-2.5 animate-in fade-in">
+            <div className="mb-4 p-3 rounded-lg bg-red-950/40 border border-red-900/50 text-red-300 text-xs flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
               <div className="flex-1 leading-relaxed">
-                <div className="font-semibold">{errorMessage}</div>
+                <div>{errorMessage}</div>
                 {remainingAttempts !== null && (
-                  <div className="mt-1 text-[11px] text-red-300/80">
-                    Осталось попыток: <span className="font-bold text-white">{remainingAttempts}</span> из 5
+                  <div className="mt-1 text-[11px] text-red-400/80">
+                    Осталось попыток: <span className="font-medium text-red-200">{remainingAttempts}</span> из 5
                   </div>
                 )}
               </div>
@@ -94,11 +79,11 @@ export default function LoginPage() {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Поле Логин */}
+            {/* Поле Имя пользователя */}
             <div>
-              <label className="block text-xs font-mono uppercase text-zinc-400 mb-1.5 flex items-center gap-1.5">
-                <User className="w-3.5 h-3.5 text-zinc-500" />
-                <span>Имя оператора (Логин)</span>
+              <label className="block text-xs font-medium text-zinc-300 mb-1.5 flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5 text-zinc-400" />
+                <span>Имя пользователя</span>
               </label>
               <input
                 type="text"
@@ -107,15 +92,15 @@ export default function LoginPage() {
                 required
                 autoComplete="username"
                 placeholder="admin"
-                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 font-mono transition-colors"
+                className="w-full px-3 py-2 bg-zinc-950/70 border border-zinc-800 rounded-lg text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-600 focus:ring-1 focus:ring-zinc-600 transition-colors"
               />
             </div>
 
             {/* Поле Пароль */}
             <div>
-              <label className="block text-xs font-mono uppercase text-zinc-400 mb-1.5 flex items-center gap-1.5">
-                <Lock className="w-3.5 h-3.5 text-zinc-500" />
-                <span>Пароль доступа</span>
+              <label className="block text-xs font-medium text-zinc-300 mb-1.5 flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5 text-zinc-400" />
+                <span>Пароль</span>
               </label>
               <input
                 type="password"
@@ -123,8 +108,8 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 autoComplete="current-password"
-                placeholder="••••••••••••"
-                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 font-mono transition-colors"
+                placeholder="••••••••"
+                className="w-full px-3 py-2 bg-zinc-950/70 border border-zinc-800 rounded-lg text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-600 focus:ring-1 focus:ring-zinc-600 transition-colors"
               />
             </div>
 
@@ -132,34 +117,32 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full mt-2 py-2.5 px-4 bg-red-600 hover:bg-red-500 active:bg-red-700 text-white font-mono text-xs uppercase tracking-wider font-semibold rounded flex items-center justify-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md shadow-red-950/40 cursor-pointer"
+              className="w-full mt-2 py-2 px-4 bg-zinc-100 hover:bg-white active:bg-zinc-200 text-zinc-900 text-sm font-medium rounded-lg flex items-center justify-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm cursor-pointer"
             >
               {loading ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Проверка учетных данных...</span>
+                  <Loader2 className="w-4 h-4 animate-spin text-zinc-700" />
+                  <span>Вход...</span>
                 </>
               ) : (
                 <>
-                  <span>Войти в пульт</span>
-                  <ArrowRight className="w-4 h-4" />
+                  <span>Войти</span>
+                  <ArrowRight className="w-4 h-4 text-zinc-600" />
                 </>
               )}
             </button>
           </form>
 
-          {/* Подсказка для администратора и инженера */}
-          <div className="mt-5 pt-4 border-t border-zinc-800/80 flex flex-col gap-1 text-[11px] font-mono text-zinc-500">
-            <div className="flex items-center justify-between">
-              <span>Доступ: admin / admin (Админ) &bull; engineer / engineer</span>
-              <span>Rate-Limit: 5/5 мин</span>
-            </div>
+          {/* Подсказка */}
+          <div className="mt-5 pt-4 border-t border-zinc-800/80 flex items-center justify-between text-xs text-zinc-400">
+            <span>Учетные записи: admin / engineer</span>
+            <span>Лимит: 5 попыток</span>
           </div>
         </div>
 
         {/* Футер */}
-        <p className="mt-4 text-center text-[11px] text-zinc-600 font-mono">
-          NOC 1C Service Desk &copy; {new Date().getFullYear()} &bull; Все права защищены
+        <p className="mt-6 text-center text-xs text-zinc-400">
+          Панель мониторинга касс • NOC
         </p>
       </div>
     </div>
