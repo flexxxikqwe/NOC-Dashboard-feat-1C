@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyBearerToken, MAX_PAYLOAD_BYTES } from '@/lib/auth';
-import db, { generateWorkplaceId, generateErrorHash } from '@/lib/db';
+import db, { generateWorkplaceId, generateErrorHash, isKillSwitchActive } from '@/lib/db';
 import { triageIncident } from '@/lib/ai-triage';
 import type { TelemetryPayload, TelemetryResponse } from '@/types/telemetry';
 
@@ -72,6 +72,53 @@ export async function POST(req: NextRequest) {
   const remoteType = body.remote.type || 'NONE';
   const remoteId = body.remote.id ? String(body.remote.id).trim() : null;
   const systemInfoJson = body.system_info ? JSON.stringify(body.system_info) : null;
+
+  // 4.1 Check emergency Kill-Switch
+  if (isKillSwitchActive()) {
+    try {
+      db.prepare(`
+        INSERT INTO workplaces (
+          id,
+          shop_name,
+          workplace_name,
+          remote_type,
+          remote_id,
+          system_info_json,
+          last_seen
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          shop_name = excluded.shop_name,
+          workplace_name = excluded.workplace_name,
+          remote_type = excluded.remote_type,
+          remote_id = excluded.remote_id,
+          system_info_json = COALESCE(excluded.system_info_json, workplaces.system_info_json),
+          last_seen = excluded.last_seen;
+      `).run(
+        workplaceId,
+        body.shop.trim(),
+        body.workplace.trim(),
+        remoteType,
+        remoteId,
+        systemInfoJson,
+        nowIso
+      );
+    } catch (e) {
+      console.warn('[KILL SWITCH] Workplace heartbeat update skipped:', e);
+    }
+
+    const killResponse: TelemetryResponse = {
+      success: true,
+      workplace_id: workplaceId,
+      incidents_recorded: 0,
+      config: {
+        kill_switch: true,
+        next_check_seconds: 86400,
+        ota_enabled: false,
+      },
+    };
+
+    return NextResponse.json(killResponse, { status: 200 });
+  }
 
   // 5. Structure incident candidates to triage and persist
   interface IncidentItemToProcess {

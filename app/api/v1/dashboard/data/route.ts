@@ -16,6 +16,7 @@ export interface DashboardIncidentRow {
   occurrences_count: number;
   status: string;
   resolved_at: string | null;
+  resolved_by: string | null;
   created_at: string;
   last_occurred_at: string;
   shop_name: string;
@@ -55,6 +56,7 @@ export async function GET() {
         i.occurrences_count,
         i.status,
         i.resolved_at,
+        i.resolved_by,
         i.created_at,
         i.last_occurred_at,
         w.shop_name,

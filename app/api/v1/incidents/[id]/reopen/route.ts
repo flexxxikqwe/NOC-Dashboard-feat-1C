@@ -21,18 +21,17 @@ export async function POST(
 
     // Извлечение текущего пользователя из сессии
     const session = await getSessionUser(req);
-    const resolvedBy = session?.username || 'дежурный';
+    const reopenedBy = session?.username || 'дежурный';
 
-    const resolvedAt = new Date().toISOString();
     const updateStmt = db.prepare(`
-      UPDATE incidents
-      SET status = 'RESOLVED',
-          resolved_at = ?,
-          resolved_by = ?
-      WHERE id = ?
+      UPDATE incidents 
+      SET status = 'ACTIVE', 
+          resolved_at = NULL,
+          resolved_by = NULL
+      WHERE id = ?;
     `);
 
-    const result = updateStmt.run(resolvedAt, resolvedBy, incidentId);
+    const result = updateStmt.run(incidentId);
 
     if (result.changes === 0) {
       return NextResponse.json(
@@ -42,22 +41,23 @@ export async function POST(
     }
 
     // Фиксация в журнале аудита
-    logAudit(resolvedBy, 'RESOLVE_INCIDENT', `Закрыта ошибка #${incidentId}`);
+    logAudit(reopenedBy, 'REOPEN_INCIDENT', `Инцидент #${incidentId} возвращен в работу`);
 
     return NextResponse.json(
       {
         success: true,
         incident_id: incidentId,
-        status: 'RESOLVED',
-        resolved_by: resolvedBy,
-        resolved_at: resolvedAt,
+        status: 'ACTIVE',
       },
       { status: 200 }
     );
   } catch (error) {
-    console.error('[RESOLVE INCIDENT ERROR]', error);
+    console.error('[REOPEN INCIDENT ERROR]', error);
     return NextResponse.json(
-      { error: 'Внутренняя ошибка сервера при закрытии инцидента', details: String(error) },
+      {
+        error: 'Внутренняя ошибка сервера при возврате инцидента в работу',
+        details: String(error),
+      },
       { status: 500 }
     );
   }

@@ -60,10 +60,12 @@ export interface Incident {
 
 export interface TelemetryResponse {
   success: boolean;
-  workplace_id: string;
-  incidents_recorded: number;
+  workplace_id?: string;
+  incidents_recorded?: number;
   config: {
     next_check_seconds: number;
-    ota_enabled: boolean;
+    ota_enabled?: boolean;
+    kill_switch?: boolean;
   };
 }
+

@@ -22,6 +22,10 @@ declare global {
   var __nocSqliteInstance: NocDatabase | undefined;
 }
 
+export function hashPassword(password: string): string {
+  return crypto.createHash('sha256').update(password, 'utf8').digest('hex');
+}
+
 export function generateWorkplaceId(shopName: string, workplaceName: string): string {
   const normalizedKey = `${shopName.trim()}::${workplaceName.trim()}`;
   return crypto.createHash('sha256').update(normalizedKey, 'utf8').digest('hex');
@@ -40,17 +44,18 @@ export function generateErrorHash(param1: string, param2: string, param3?: strin
   return crypto.createHash('sha256').update(normalizedPayload, 'utf8').digest('hex');
 }
 
-export function initializeSchema(database: NocDatabase): void {
-  database.pragma('journal_mode = WAL');
-  database.pragma('busy_timeout = 10000');
-  database.pragma('foreign_keys = ON');
+function initializeSchema(database: DatabaseSync) {
+  // Настройки производительности SQLite для высокой надежности и скорости
+  database.exec('PRAGMA journal_mode = WAL;');
+  database.exec('PRAGMA synchronous = NORMAL;');
+  database.exec('PRAGMA busy_timeout = 5000;');
 
   database.exec(`
     CREATE TABLE IF NOT EXISTS workplaces (
       id TEXT PRIMARY KEY,
       shop_name TEXT NOT NULL,
       workplace_name TEXT NOT NULL,
-      remote_type TEXT NOT NULL,
+      remote_type TEXT DEFAULT 'NONE',
       remote_id TEXT,
       system_info_json TEXT,
       last_seen DATETIME NOT NULL
@@ -58,7 +63,7 @@ export function initializeSchema(database: NocDatabase): void {
 
     CREATE TABLE IF NOT EXISTS incidents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      workplace_id TEXT NOT NULL REFERENCES workplaces(id) ON DELETE CASCADE,
+      workplace_id TEXT NOT NULL REFERENCES workplaces(id),
       error_hash TEXT NOT NULL,
       error_type TEXT NOT NULL,
       severity TEXT NOT NULL DEFAULT 'ERROR',
@@ -68,6 +73,7 @@ export function initializeSchema(database: NocDatabase): void {
       occurrences_count INTEGER DEFAULT 1,
       status TEXT DEFAULT 'ACTIVE',
       resolved_at DATETIME,
+      resolved_by TEXT,
       created_at DATETIME NOT NULL,
       last_occurred_at DATETIME NOT NULL
     );
@@ -77,21 +83,46 @@ export function initializeSchema(database: NocDatabase): void {
 
     CREATE INDEX IF NOT EXISTS idx_incidents_error_hash_status
       ON incidents(error_hash, status);
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('ADMIN', 'ENGINEER')),
+      created_at DATETIME NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS system_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at DATETIME NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL,
+      action TEXT NOT NULL,
+      details TEXT,
+      created_at DATETIME NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at
+      ON audit_logs(created_at DESC);
   `);
 
-  // Migration check: in case workplaces was created previously without system_info_json
+  // Проверка миграций таблицы workplaces
   const workplaceColumns = database
-    .prepare<{ name: string }>("PRAGMA table_info('workplaces')")
-    .all();
+    .prepare("PRAGMA table_info('workplaces')")
+    .all() as Array<{ name: string }>;
   const hasSystemInfo = workplaceColumns.some((col) => col.name === 'system_info_json');
   if (!hasSystemInfo) {
     database.exec('ALTER TABLE workplaces ADD COLUMN system_info_json TEXT;');
   }
 
-  // Migration check: in case incidents was created previously without severity
+  // Проверка миграций таблицы incidents
   const incidentColumns = database
-    .prepare<{ name: string }>("PRAGMA table_info('incidents')")
-    .all();
+    .prepare("PRAGMA table_info('incidents')")
+    .all() as Array<{ name: string }>;
   const hasSeverity = incidentColumns.some((col) => col.name === 'severity');
   if (!hasSeverity) {
     database.exec("ALTER TABLE incidents ADD COLUMN severity TEXT NOT NULL DEFAULT 'ERROR';");
@@ -99,7 +130,55 @@ export function initializeSchema(database: NocDatabase): void {
 
   const hasResolvedAt = incidentColumns.some((col) => col.name === 'resolved_at');
   if (!hasResolvedAt) {
-    database.exec("ALTER TABLE incidents ADD COLUMN resolved_at DATETIME;");
+    database.exec('ALTER TABLE incidents ADD COLUMN resolved_at DATETIME;');
+  }
+
+  const hasResolvedBy = incidentColumns.some((col) => col.name === 'resolved_by');
+  if (!hasResolvedBy) {
+    database.exec('ALTER TABLE incidents ADD COLUMN resolved_by TEXT;');
+  }
+
+  // Автоматическая инициализация пользователей по умолчанию (admin и engineer)
+  try {
+    const userCountRow = database
+      .prepare('SELECT count(*) as count FROM users')
+      .get() as { count: number } | undefined;
+    if (!userCountRow || userCountRow.count === 0) {
+      const nowIso = new Date().toISOString();
+      const insertUser = database.prepare(
+        'INSERT OR IGNORE INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)'
+      );
+      insertUser.run(
+        'user-admin-1',
+        'admin',
+        hashPassword('admin'),
+        'ADMIN',
+        nowIso
+      );
+      insertUser.run(
+        'user-engineer-1',
+        'engineer',
+        hashPassword('engineer'),
+        'ENGINEER',
+        nowIso
+      );
+    }
+  } catch (err) {
+    console.error('Ошибка инициализации пользователей:', err);
+  }
+
+  // Инициализация значения по умолчанию для kill_switch
+  try {
+    const killSwitchRow = database
+      .prepare('SELECT value FROM system_settings WHERE key = ?')
+      .get('kill_switch') as { value: string } | undefined;
+    if (!killSwitchRow) {
+      database
+        .prepare('INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)')
+        .run('kill_switch', 'false', new Date().toISOString());
+    }
+  } catch (err) {
+    console.error('Ошибка инициализации system_settings:', err);
   }
 }
 
@@ -121,10 +200,10 @@ function createDatabaseConnection(): NocDatabase {
         get(...params: unknown[]): T | undefined {
           return stmt.get(...sanitizeParams(params)) as T | undefined;
         },
-        run(...params: unknown[]) {
+        run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint } {
           const res = stmt.run(...sanitizeParams(params));
           return {
-            changes: Number(res.changes ?? 0),
+            changes: res.changes,
             lastInsertRowid: res.lastInsertRowid,
           };
         },
@@ -134,34 +213,24 @@ function createDatabaseConnection(): NocDatabase {
       rawDb.exec(sql);
     },
     pragma(query: string): unknown {
-      const trimmed = query.trim();
-      const pragmaSql = /^pragma\b/i.test(trimmed) ? trimmed : `PRAGMA ${trimmed};`;
-      if (trimmed.includes('=') || trimmed.toLowerCase() === 'optimize') {
-        rawDb.exec(pragmaSql);
-        return null;
-      }
-      return rawDb.prepare(pragmaSql).all();
+      return rawDb.prepare(`PRAGMA ${query}`).all();
     },
     transaction<T extends (...args: any[]) => any>(fn: T): T {
       return ((...args: any[]) => {
-        rawDb.exec('BEGIN');
+        rawDb.exec('BEGIN IMMEDIATE');
         try {
           const result = fn(...args);
           rawDb.exec('COMMIT');
           return result;
         } catch (error) {
-          try {
-            rawDb.exec('ROLLBACK');
-          } catch {
-            // ignore rollback error
-          }
+          rawDb.exec('ROLLBACK');
           throw error;
         }
       }) as T;
     },
   };
 
-  initializeSchema(dbWrapper);
+  initializeSchema(rawDb);
   return dbWrapper;
 }
 
@@ -170,6 +239,121 @@ export const db: NocDatabase =
 
 if (process.env.NODE_ENV !== 'production') {
   globalThis.__nocSqliteInstance = db;
+}
+
+// ==========================================
+// ХЕЛПЕРЫ ПОЛЬЗОВАТЕЛЕЙ И РОЛЕЙ (RBAC)
+// ==========================================
+
+export interface UserRow {
+  id: string;
+  username: string;
+  password_hash: string;
+  role: 'ADMIN' | 'ENGINEER';
+  created_at: string;
+}
+
+export function getUserByUsername(username: string): UserRow | null {
+  try {
+    const row = db
+      .prepare<UserRow>('SELECT id, username, password_hash, role, created_at FROM users WHERE username = ? LIMIT 1')
+      .get(username);
+    return row || null;
+  } catch {
+    return null;
+  }
+}
+
+// ==========================================
+// ХЕЛПЕРЫ СИСТЕМНЫХ НАСТРОЕК И ПАУЗЫ (KILL-SWITCH)
+// ==========================================
+
+export function getSystemSetting(key: string, defaultValue = ''): string {
+  try {
+    const row = db
+      .prepare<{ value: string }>('SELECT value FROM system_settings WHERE key = ? LIMIT 1')
+      .get(key);
+    return row ? row.value : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
+
+export function setSystemSetting(key: string, value: string): void {
+  const nowIso = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO system_settings (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = excluded.updated_at
+  `).run(key, value, nowIso);
+}
+
+export function isKillSwitchActive(): boolean {
+  const val = getSystemSetting('kill_switch', 'false');
+  return val === 'true' || val === '1';
+}
+
+export function getKillSwitchState(): { active: boolean; updated_at: string } {
+  try {
+    const row = db
+      .prepare<{ value: string; updated_at: string }>(
+        'SELECT value, updated_at FROM system_settings WHERE key = ? LIMIT 1'
+      )
+      .get('kill_switch');
+    if (!row) {
+      return { active: false, updated_at: new Date().toISOString() };
+    }
+    return {
+      active: row.value === 'true' || row.value === '1',
+      updated_at: row.updated_at,
+    };
+  } catch {
+    return { active: false, updated_at: new Date().toISOString() };
+  }
+}
+
+export function setKillSwitch(active: boolean): { active: boolean; updated_at: string } {
+  const nowIso = new Date().toISOString();
+  setSystemSetting('kill_switch', active ? 'true' : 'false');
+  return { active, updated_at: nowIso };
+}
+
+// ==========================================
+// ХЕЛПЕРЫ ЖУРНАЛА АУДИТА (AUDIT TRAIL)
+// ==========================================
+
+export interface AuditLogRow {
+  id: number;
+  username: string;
+  action: string;
+  details: string | null;
+  created_at: string;
+}
+
+export function logAudit(username: string, action: string, details?: string): void {
+  try {
+    const nowIso = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO audit_logs (username, action, details, created_at)
+      VALUES (?, ?, ?, ?)
+    `).run(username || 'система', action, details || null, nowIso);
+  } catch (err) {
+    console.error('Ошибка записи audit_log:', err);
+  }
+}
+
+export function getAuditLogs(limit = 50): AuditLogRow[] {
+  try {
+    return db
+      .prepare<AuditLogRow>(
+        'SELECT id, username, action, details, created_at FROM audit_logs ORDER BY created_at DESC LIMIT ?'
+      )
+      .all(limit);
+  } catch {
+    return [];
+  }
 }
 
 export default db;
