@@ -16,11 +16,12 @@ console.log('======================================================');
 console.log('🔐 NOC DASHBOARD — SESSION & SECRET HARDENING TESTS');
 console.log('======================================================\n');
 
-// ------------------------------------------------------------------
-// 1. Валидная сессия с явно заданным тестовым секретом принимается
-// ------------------------------------------------------------------
-console.log('▶ ТЕСТ 1: Валидная сессия с явно заданным тестовым секретом...');
 const originalSecret = process.env.SESSION_SECRET;
+
+// ------------------------------------------------------------------
+// 1. Валидная сессия с явно заданным тестовым секретом достаточной длины (>= 32 байт)
+// ------------------------------------------------------------------
+console.log('▶ ТЕСТ 1: Валидная сессия с тестовым секретом (>= 32 байт)...');
 process.env.SESSION_SECRET = 'test-explicit-custom-secret-key-32-chars-long';
 
 const validToken = await createSessionToken('admin', 'ADMIN', 3600);
@@ -38,7 +39,7 @@ console.log('✅ ТЕСТ 1 УСПЕШНО ПРОЙДЕН: Валидный то
 // ------------------------------------------------------------------
 console.log('▶ ТЕСТ 2: Неверная подпись отклоняется...');
 const parts = validToken.split('.');
-const tamperedSig = 'f'.repeat(64); // Valid hex length, but wrong signature
+const tamperedSig = 'f'.repeat(64);
 const badSigToken = `${parts[0]}.${parts[1]}.${parts[2]}.${tamperedSig}`;
 
 const verifiedBadSig = await verifySessionToken(badSigToken);
@@ -74,7 +75,6 @@ console.log('✅ ТЕСТ 3 УСПЕШНО ПРОЙДЕН: Любое измен
 // 4. Просроченная сессия отклоняется
 // ------------------------------------------------------------------
 console.log('▶ ТЕСТ 4: Просроченная сессия отклоняется...');
-// Создаем токен с maxAge = -10 секунд (уже истек)
 const expiredToken = await createSessionToken('admin', 'ADMIN', -10);
 assert.equal(hasValidSessionFormat(expiredToken), false, 'Expired token format check must return false');
 
@@ -86,72 +86,104 @@ console.log('✅ ТЕСТ 4 УСПЕШНО ПРОЙДЕН: Просроченн�
 // 5. Обрезанная подпись и подпись неверного формата отклоняются
 // ------------------------------------------------------------------
 console.log('▶ ТЕСТ 5: Обрезанная подпись и подпись неверного формата...');
-// 5a. Обрезанная подпись (32 символа вместо 64)
 const truncatedSigToken = `${parts[0]}.${parts[1]}.${parts[2]}.${parts[3].substring(0, 32)}`;
 assert.equal(hasValidSessionFormat(truncatedSigToken), false, 'Truncated sig format check must return false');
 const verifiedTruncated = await verifySessionToken(truncatedSigToken);
 assert.equal(verifiedTruncated.valid, false, 'Truncated sig must be rejected');
 
-// 5b. Не-hex символы в подписи (например, символы 'zzzz...')
 const nonHexSig = 'z'.repeat(64);
 const nonHexSigToken = `${parts[0]}.${parts[1]}.${parts[2]}.${nonHexSig}`;
 assert.equal(hasValidSessionFormat(nonHexSigToken), false, 'Non-hex sig format check must return false');
 const verifiedNonHex = await verifySessionToken(nonHexSigToken);
 assert.equal(verifiedNonHex.valid, false, 'Non-hex sig must be rejected');
 
-// 5c. safeCompareHex прямые тесты
+// safeCompareHex прямые проверки
 assert.equal(safeCompareHex('a'.repeat(64), 'a'.repeat(64)), true);
-assert.equal(safeCompareHex('A'.repeat(64), 'a'.repeat(64)), true); // Case-insensitive hex
+assert.equal(safeCompareHex('A'.repeat(64), 'a'.repeat(64)), true);
 assert.equal(safeCompareHex('a'.repeat(64), 'a'.repeat(63) + 'b'), false);
-assert.equal(safeCompareHex('a'.repeat(32), 'a'.repeat(32)), false); // Not 64 chars
-assert.equal(safeCompareHex('z'.repeat(64), 'z'.repeat(64)), false); // Invalid hex characters
+assert.equal(safeCompareHex('a'.repeat(32), 'a'.repeat(32)), false);
+assert.equal(safeCompareHex('z'.repeat(64), 'z'.repeat(64)), false);
 assert.equal(safeCompareHex('', ''), false);
 console.log('✅ ТЕСТ 5 УСПЕШНО ПРОЙДЕН: Обрезанные, не-hex и искаженные подписи строжайше отсекаются.\n');
 
 // ------------------------------------------------------------------
-// 6. Отсутствующий production-секрет никогда не приводит к fallback
+// 6. Строгая валидация длины SESSION_SECRET во ВСЕХ режимах (минимум 32 байта)
 // ------------------------------------------------------------------
-console.log('▶ ТЕСТ 6: Отсутствующий SESSION_SECRET никогда не использует fallback...');
-delete process.env.SESSION_SECRET;
+console.log('▶ ТЕСТ 6: Строгая валидация длины SESSION_SECRET во ВСЕХ режимах...');
 
-// 6a. createSessionToken должен завершиться с ошибкой конфигурации
-let createFailedCleanly = false;
+// 6a. 16-байтный секрет (отклоняется во всех режимах)
+process.env.SESSION_SECRET = '1234567890123456'; // 16 bytes
+let shortSecretFailed = false;
 try {
   await createSessionToken('admin', 'ADMIN', 3600);
 } catch (err) {
-  createFailedCleanly = true;
+  shortSecretFailed = true;
   assert(err instanceof Error);
-  assert(err.message.includes('SESSION_SECRET is not configured'), 'Error message must specify missing config');
+  assert(err.message.includes('too short'), 'Error message must specify too short');
+  assert(err.message.includes('32 bytes'), 'Error message must specify 32 bytes minimum');
+  assert(!err.message.includes('1234567890123456'), 'Error message must not leak secret');
 }
-assert.equal(createFailedCleanly, true, 'createSessionToken must throw when SESSION_SECRET is missing');
+assert.equal(shortSecretFailed, true, '16-byte secret must be rejected');
 
-// 6b. verifySessionToken должен безопасно вернуть { valid: false }, не падая и не принимая токен
-const verifiedWithoutSecret = await verifySessionToken(validToken);
-assert.equal(verifiedWithoutSecret.valid, false, 'verifySessionToken must fail closed when secret is unset');
+// 6b. Секрет только из пробелов
+process.env.SESSION_SECRET = '                                ';
+let whitespaceFailed = false;
+try {
+  await createSessionToken('admin', 'ADMIN', 3600);
+} catch (err) {
+  whitespaceFailed = true;
+  assert(err instanceof Error);
+  assert(err.message.includes('SESSION_SECRET is not configured'));
+}
+assert.equal(whitespaceFailed, true, 'Whitespace-only secret must be rejected');
 
-// 6c. Проверка на старый известный fallback 'noc-dashboard-session-secret-salt-2026-production'
-// Если бы код откатился к старой соли, токен, подписанный старой солью, прошел бы проверку.
-process.env.SESSION_SECRET = 'noc-dashboard-session-secret-salt-2026-production';
-const oldSaltToken = await createSessionToken('admin', 'ADMIN', 3600);
+// 6c. Пустая строка
+process.env.SESSION_SECRET = '';
+let emptyFailed = false;
+try {
+  await createSessionToken('admin', 'ADMIN', 3600);
+} catch (err) {
+  emptyFailed = true;
+  assert(err instanceof Error);
+  assert(err.message.includes('SESSION_SECRET is not configured'));
+}
+assert.equal(emptyFailed, true, 'Empty secret must be rejected');
+
+// 6d. Отсутствующий секрет (undefined)
 delete process.env.SESSION_SECRET;
+let missingFailed = false;
+try {
+  await createSessionToken('admin', 'ADMIN', 3600);
+} catch (err) {
+  missingFailed = true;
+  assert(err instanceof Error);
+  assert(err.message.includes('SESSION_SECRET is not configured'));
+}
+assert.equal(missingFailed, true, 'Missing secret must be rejected');
 
-const verifiedOldSalt = await verifySessionToken(oldSaltToken);
-assert.equal(verifiedOldSalt.valid, false, 'Token signed with old fallback must be rejected when secret is unset');
+// 6e. Fail-Closed при вызове verifySessionToken с коротким/отсутствующим ключом
+process.env.SESSION_SECRET = 'short';
+const verifiedWithShort = await verifySessionToken(validToken);
+assert.equal(verifiedWithShort.valid, false, 'verifySessionToken must return false with short key');
 
-console.log('✅ ТЕСТ 6 УСПЕШНО ПРОЙДЕН: При отсутствии секрета fallback отсутствует, отказ безопасен (Fail-Closed).\n');
+delete process.env.SESSION_SECRET;
+const verifiedWithMissing = await verifySessionToken(validToken);
+assert.equal(verifiedWithMissing.valid, false, 'verifySessionToken must return false with missing key');
 
-// Восстанавливаем окружение
-process.env.SESSION_SECRET = originalSecret || 'SUPPORT_SESSION_SECRET_2026';
+console.log('✅ ТЕСТ 6 УСПЕШНО ПРОЙДЕН: Секреты < 32 байт, пустые и отсутствующие безопасно отклоняются во всех режимах.\n');
 
 // ------------------------------------------------------------------
 // 7. Поведение Logout и сессионных кук
 // ------------------------------------------------------------------
-console.log('▶ ТЕСТ 7: Сессионная кука и гарантии отзыва при Logout...');
+console.log('▶ ТЕСТ 7: Сессионная кука и контракт очистки при Logout...');
 assert.equal(SESSION_COOKIE_NAME, 'noc_auth_session');
 console.log('   - Клиентская кука: ' + SESSION_COOKIE_NAME);
-console.log('   - При logout выставляется Max-Age=0, Expires=1970-01-01');
-console.log('   - Модель токена: Stateless HMAC. Документировано: токен валиден до expiration, если не хранится blacklist в БД.');
+console.log('   - Logout выставляет Max-Age=0, Expires=1970-01-01');
+console.log('   - Stateless HMAC: токены валидны до expiresAt, мгновенный отзыв требует серверного blacklist');
 console.log('✅ ТЕСТ 7 УСПЕШНО ПРОЙДЕН: Контракт очистки куки проверен.\n');
+
+// Восстанавливаем оригинальный секрет
+process.env.SESSION_SECRET = originalSecret;
 
 console.log('======================================================');
 console.log('🎉 ВСЕ 7 ТЕСТОВ БЕЗОПАСНОСТИ СЕКРЕТОВ УСПЕШНО ПРОЙДЕНЫ!');

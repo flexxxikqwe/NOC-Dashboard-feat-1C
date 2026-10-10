@@ -138,7 +138,7 @@ function initializeSchema(database: DatabaseSync) {
     database.exec('ALTER TABLE incidents ADD COLUMN resolved_by TEXT;');
   }
 
-  // Автоматическая инициализация пользователей по умолчанию (admin и engineer)
+  // Автоматическая инициализация первоначальных учетных записей (при пустой таблице users)
   try {
     const userCountRow = database
       .prepare('SELECT count(*) as count FROM users')
@@ -148,20 +148,33 @@ function initializeSchema(database: DatabaseSync) {
       const insertUser = database.prepare(
         'INSERT OR IGNORE INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)'
       );
-      insertUser.run(
-        'user-admin-1',
-        'admin',
-        hashPassword('admin'),
-        'ADMIN',
-        nowIso
-      );
-      insertUser.run(
-        'user-engineer-1',
-        'engineer',
-        hashPassword('engineer'),
-        'ENGINEER',
-        nowIso
-      );
+
+      // В production пароли должны задаваться через DASHBOARD_USERNAME/DASHBOARD_PASSWORD
+      // либо создаваться вручную через `node scripts/create-user.mjs <username> <password> ADMIN`
+      const isProd = process.env.NODE_ENV === 'production';
+      const initialAdminUser = process.env.DASHBOARD_USERNAME || 'admin';
+      const initialAdminPass = process.env.DASHBOARD_PASSWORD || (isProd ? null : 'admin');
+
+      if (initialAdminPass) {
+        insertUser.run(
+          'user-admin-1',
+          initialAdminUser,
+          hashPassword(initialAdminPass),
+          'ADMIN',
+          nowIso
+        );
+      }
+
+      if (!isProd) {
+        // Тестовый пользователь-инженер доступен только в режиме разработки/тестирования
+        insertUser.run(
+          'user-engineer-1',
+          'engineer',
+          hashPassword('engineer'),
+          'ENGINEER',
+          nowIso
+        );
+      }
     }
   } catch (err) {
     console.error('Ошибка инициализации пользователей:', err);

@@ -59,6 +59,7 @@ export async function POST(req: NextRequest) {
   }
 
   // 3. Проверка пользователя в базе данных (users)
+  // Единственный источник истины для зарегистрированных пользователей — запись в БД.
   const dbUser = getUserByUsername(username);
   let authenticatedUser: { username: string; role: UserRole } | null = null;
 
@@ -66,13 +67,6 @@ export async function POST(req: NextRequest) {
     const inputHash = hashPassword(password);
     if (dbUser.password_hash === inputHash) {
       authenticatedUser = { username: dbUser.username, role: dbUser.role };
-    }
-  } else {
-    // Резервная проверка через переменные окружения (.env)
-    const expectedEnvUsername = process.env.DASHBOARD_USERNAME || 'admin';
-    const expectedEnvPassword = process.env.DASHBOARD_PASSWORD || 'admin';
-    if (username === expectedEnvUsername && password === expectedEnvPassword) {
-      authenticatedUser = { username, role: 'ADMIN' };
     }
   }
 

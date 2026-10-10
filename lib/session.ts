@@ -26,16 +26,28 @@ export const SESSION_COOKIE_OPTIONS = {
 const textEncoder = new TextEncoder();
 
 /**
- * Retrieves the cryptographic secret key for HMAC-SHA256 session signing.
- * In production or runtime, returns process.env.SESSION_SECRET.
- * If unset in non-production environments (test/development), throws a clean ConfigurationError
- * unless an explicit secret was provided. Never falls back to a hardcoded predictable secret.
+ * Retrieves and strictly validates the cryptographic secret key for HMAC-SHA256 session signing.
+ * Requirements:
+ * - Must be defined, non-empty, and not purely whitespace.
+ * - Minimum length: 32 bytes after UTF-8 encoding across all environments (production, development, test).
+ * - Never falls back to a hardcoded or predictable default secret.
+ * - Does not leak secret values in error messages.
  */
 function getSecretKey(): string {
   const secret = process.env.SESSION_SECRET;
   if (!secret || typeof secret !== 'string' || secret.trim().length === 0) {
     throw new Error('SESSION_SECRET is not configured in environment variables');
   }
+
+  const encodedBytes = textEncoder.encode(secret);
+  const minRequiredBytes = 32;
+
+  if (encodedBytes.byteLength < minRequiredBytes) {
+    throw new Error(
+      `SESSION_SECRET is too short (${encodedBytes.byteLength} bytes). Minimum required length is ${minRequiredBytes} bytes.`
+    );
+  }
+
   return secret;
 }
 
