@@ -128,10 +128,19 @@ export async function POST(req: NextRequest) {
   }
 
   // 6. Выдача сессионного токена с ролью
-  const sessionToken = await createSessionToken(
-    authenticatedUser.username,
-    authenticatedUser.role
-  );
+  let sessionToken: string;
+  try {
+    sessionToken = await createSessionToken(
+      authenticatedUser.username,
+      authenticatedUser.role
+    );
+  } catch (err) {
+    console.error('Ошибка криптографической подписи сессии:', err);
+    return NextResponse.json(
+      { error: 'Служба авторизации временно недоступна. Ошибка конфигурации сервера.' },
+      { status: 500 }
+    );
+  }
 
   // 7. Запись в журнал аудита
   logAudit(

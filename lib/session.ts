@@ -23,11 +23,20 @@ export const SESSION_COOKIE_OPTIONS = {
   secure: process.env.NODE_ENV === 'production',
 };
 
-const DEFAULT_SECRET = 'noc-dashboard-session-secret-salt-2026-production';
 const textEncoder = new TextEncoder();
 
+/**
+ * Retrieves the cryptographic secret key for HMAC-SHA256 session signing.
+ * In production or runtime, returns process.env.SESSION_SECRET.
+ * If unset in non-production environments (test/development), throws a clean ConfigurationError
+ * unless an explicit secret was provided. Never falls back to a hardcoded predictable secret.
+ */
 function getSecretKey(): string {
-  return process.env.SESSION_SECRET || DEFAULT_SECRET;
+  const secret = process.env.SESSION_SECRET;
+  if (!secret || typeof secret !== 'string' || secret.trim().length === 0) {
+    throw new Error('SESSION_SECRET is not configured in environment variables');
+  }
+  return secret;
 }
 
 async function importHmacKey(secret: string): Promise<CryptoKey> {
@@ -49,16 +58,23 @@ function bufferToHex(buffer: ArrayBuffer): string {
   return hex;
 }
 
+const HEX_CHARS_REGEX = /^[0-9a-fA-F]+$/;
+
 /**
- * Constant-time comparison for hex strings to avoid timing attacks
- * and prevent buffer length mismatch errors (unlike timingSafeEqual).
+ * Constant-time comparison for hex strings to prevent timing attacks.
+ * Verifies that both inputs are valid hex strings of identical length (64 chars for SHA-256).
  */
 export function safeCompareHex(a: string, b: string): boolean {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
-  if (a.length !== b.length) return false;
+  if (a.length !== 64 || b.length !== 64) return false;
+  if (!HEX_CHARS_REGEX.test(a) || !HEX_CHARS_REGEX.test(b)) return false;
+
+  const aLower = a.toLowerCase();
+  const bLower = b.toLowerCase();
+
   let mismatch = 0;
-  for (let i = 0; i < a.length; i++) {
-    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  for (let i = 0; i < 64; i++) {
+    mismatch |= aLower.charCodeAt(i) ^ bLower.charCodeAt(i);
   }
   return mismatch === 0;
 }
@@ -102,7 +118,7 @@ export function hasValidSessionFormat(token: string | null | undefined): boolean
     if (Date.now() > expiresAtMs) {
       return false;
     }
-    if (!signatureHex || signatureHex.length !== 64) {
+    if (!signatureHex || signatureHex.length !== 64 || !HEX_CHARS_REGEX.test(signatureHex)) {
       return false;
     }
     return true;
@@ -122,7 +138,7 @@ export function hasValidSessionFormat(token: string | null | undefined): boolean
     if (Date.now() > expiresAtMs) {
       return false;
     }
-    if (!signatureHex || signatureHex.length !== 64) {
+    if (!signatureHex || signatureHex.length !== 64 || !HEX_CHARS_REGEX.test(signatureHex)) {
       return false;
     }
     return true;
