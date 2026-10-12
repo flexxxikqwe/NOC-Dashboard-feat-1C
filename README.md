@@ -331,12 +331,12 @@ chmod +x /var/www/noc-1c/scripts/backup.sh
 3. Скрипт:
    * Проверяет права администратора.
    * Проверяет и закрывает монопольные процессы 1С (`1cv8.exe`).
-   * Находит каталог информационной базы в `ibases.v8i`.
+   * Находит каталог информационной базы.
    * Тихо подключает `support.cfe` через пакетный режим Конфигуратора:
-     `/LoadCfg -Extension "_МС_Поддержка" /UpdateDBCfg`.
-   * Проверяет наличие установленного AnyDesk/RuDesktop.
-   * Делает тестовый запрос и сообщает об успешном подключении.
-4. В веб-панели магазина касса появляется со статусом **«На связи»**.
+     `/LoadCfg -Extension "_МониторСаппорта" /UpdateDBCfg`.
+   * Проверяет наличие установленного AnyDesk/RuDesktop (без статических паролей).
+   * Сохраняет параметры в `%ProgramData%\1C-NOC\config.json` с проверкой ACL.
+4. В веб-панели магазина касса появляется со статусом **«В сети»**.
 
 ---
 
@@ -348,3 +348,18 @@ chmod +x /var/www/noc-1c/scripts/backup.sh
 - [ ] Настроен ежедневный бэкап базы данных в `/var/backups/noc-1c`.
 - [ ] Файл `support.cfe` проверен и доступен по адресу `https://noc.yourcompany.ru/downloads/support.cfe`.
 - [ ] Тестовая касса подключена, статус отображается в реестре без задержек интерфейса у кассира.
+
+---
+
+## 6. Дорожная карта развития POS-клиента и Windows Agent (Roadmap Фаз 4.0 — 4.5)
+
+| Фаза | Наименование | Фактический статус | Описание и зависимости |
+| :--- | :--- | :--- | :--- |
+| **Phase 4.0** | POS audit and architecture decisions | **Выполнено** | Аудит BSL-кода, скриптов, блокировок кассы и статических паролей AnyDesk. Архитектурное решение о переходе на нативную службу. |
+| **Phase 4.0.1** | Installer security hardening: TLS, token handling, configuration and ACL | **Реализовано статически** | Удаление `curl -k`, обязательный HTTPS, защита токена от затирания, экранирование JSON, проверка контейнера 1С (`FF FF FF 7F`), исправление BSL `ExpandEnvironmentStrings`. *Внимание:* Выполнение BAT и применение NTFS ACL на реальной Windows-системе пока не подтверждены; изоляция токена в файловой 1С открыта как блокер до Phase 4.2. |
+| **Phase 4.1** | Lightweight 1C BSL extension / Zero-Freeze | **Выполнено в BSL (Ожидает сборки CFE)** | Удалены синхронные сетевые вызовы и WMI/COM из основного потока 1С, внедрена атомарная запись в spool (`temp_<guid>.tmp` -> `<ts>_<guid>.json`) по контракту `SPOOL_CONTRACT.md`. Бинарный `support.cfe` требует перекомпиляции в 1С:Конфигураторе. |
+| **Phase 4.2** | Native Windows Service C++/Win32 and spool ingestion | **В очереди (Следующая задача)** | Разработка нативной службы C++/Win32, мониторинг spool через `ReadDirectoryChangesW`, валидация схемы JSON, изоляция в quarantine. Зависимость от Phase 4.1 выполнена. |
+| **Phase 4.3** | Bounded SQLite queue and asynchronous HTTP transport | **Запланировано** | Кольцевой буфер SQLite (лимит базы <= 10 МБ), асинхронный WinHTTP-транспорт (TLS 1.2/1.3, gzip, backoff), нативный сбор метрик Win32 API. |
+| **Phase 4.4** | AnyDesk/RuDesktop ID discovery and configuration security | **Запланировано** | Безопасное чтение ID из конфигураций AnyDesk/RuDesktop в контексте SYSTEM, хранение секрета в защищенном реестре. |
+| **Phase 4.5** | End-to-end testing, crash recovery, performance measurements and pilot rollout | **Запланировано** | Комплексное тестирование на реальных Windows POS-стендах, 72ч автономности (лимит 10 МБ), стресс-тесты аварийного отключения питания, пилот. |
+
