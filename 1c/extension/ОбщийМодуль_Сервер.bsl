@@ -31,7 +31,7 @@
 	Попытка
 		// 1. Попытка чтения из защищенного файла конфигурации %ProgramData%\1C-NOC\config.json
 		КаталогProgramData = _МС_ПолучитьПеременнуюСредыСервер("ProgramData");
-		Если ПустаяСтрока(КаталогProgramData) Или КаталогProgramData = "%ProgramData%" Тогда
+		Если ПустаяСтрока(КаталогProgramData) Тогда
 			КаталогProgramData = "C:\ProgramData";
 		КонецЕсли;
 
@@ -95,7 +95,13 @@
 
 	Попытка
 		WshShell = Новый COMОбъект("WScript.Shell");
-		Возврат WshShell.ExpandEnvironmentStrings("%" + ИмяПеременной + "%");
+		Шаблон = "%" + ИмяПеременной + "%";
+		Значение = WshShell.ExpandEnvironmentStrings(Шаблон);
+		// Если переменная окружения отсутствует, ExpandEnvironmentStrings возвращает нераскрытую ссылку "%VARIABLE%"
+		Если ВРег(СокрЛП(Значение)) = ВРег(Шаблон) Тогда
+			Возврат "";
+		КонецЕсли;
+		Возврат Значение;
 	Исключение
 		Возврат "";
 	КонецПопытки;
