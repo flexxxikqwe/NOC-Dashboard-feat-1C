@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const dbPath = path.resolve(__dirname, '..', 'storage.db');
+const dbPath = process.env.NOC_DB_PATH || path.resolve(__dirname, '..', 'storage.db');
 
 const args = process.argv.slice(2);
 
@@ -58,13 +58,21 @@ function hashPassword(password) {
 try {
   const db = new DatabaseSync(dbPath);
 
-  // Убедимся, что таблица users существует
+  // Убедимся, что таблицы users и audit_logs существуют
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL CHECK(role IN ('ADMIN', 'ENGINEER')),
+      created_at DATETIME NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL,
+      action TEXT NOT NULL,
+      details TEXT,
       created_at DATETIME NOT NULL
     );
   `);
@@ -82,6 +90,20 @@ try {
   `);
 
   stmt.run(userId, rawUsername, passwordHash, rawRole, nowIso);
+
+  try {
+    db.prepare(`
+      INSERT INTO audit_logs (username, action, details, created_at)
+      VALUES (?, ?, ?, ?)
+    `).run(
+      rawUsername,
+      'USER_CLI_PROVISIONED',
+      `Учетная запись [${rawUsername}] создана или обновлена через scripts/create-user.mjs с ролью [${rawRole}]`,
+      nowIso
+    );
+  } catch {
+    // Non-blocking
+  }
 
   console.log(`✓ Пользователь [${rawUsername}] успешно создан с ролью [${rawRole}].`);
 } catch (error) {

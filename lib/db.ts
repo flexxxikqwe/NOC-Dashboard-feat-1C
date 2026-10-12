@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
 import path from 'node:path';
 
-const DB_FILE_PATH = path.resolve(process.cwd(), 'storage.db');
+const DB_FILE_PATH = process.env.NOC_DB_PATH || path.resolve(process.cwd(), 'storage.db');
 
 export interface StatementWrapper<T = unknown> {
   all(...params: unknown[]): T[];
@@ -152,8 +152,9 @@ function initializeSchema(database: DatabaseSync) {
       // В production пароли должны задаваться через DASHBOARD_USERNAME/DASHBOARD_PASSWORD
       // либо создаваться вручную через `node scripts/create-user.mjs <username> <password> ADMIN`
       const isProd = process.env.NODE_ENV === 'production';
-      const initialAdminUser = process.env.DASHBOARD_USERNAME || 'admin';
-      const initialAdminPass = process.env.DASHBOARD_PASSWORD || (isProd ? null : 'admin');
+      const initialAdminUser = (process.env.DASHBOARD_USERNAME || 'admin').trim();
+      const rawPassword = process.env.DASHBOARD_PASSWORD?.trim();
+      const initialAdminPass = rawPassword && rawPassword.length > 0 ? rawPassword : (isProd ? null : 'admin');
 
       if (initialAdminPass) {
         insertUser.run(
@@ -163,6 +164,20 @@ function initializeSchema(database: DatabaseSync) {
           'ADMIN',
           nowIso
         );
+        try {
+          database
+            .prepare(
+              'INSERT INTO audit_logs (username, action, details, created_at) VALUES (?, ?, ?, ?)'
+            )
+            .run(
+              initialAdminUser,
+              'USER_INIT',
+              'Начальная учетная запись администратора инициализирована при первом запуске',
+              nowIso
+            );
+        } catch {
+          // Игнорируем ошибку аудита, если таблица еще инициализируется
+        }
       }
 
       if (!isProd) {
@@ -199,8 +214,9 @@ function sanitizeParams(params: unknown[]): unknown[] {
   return params.map((p) => (p === undefined ? null : p));
 }
 
-function createDatabaseConnection(): NocDatabase {
-  const rawDb = new DatabaseSync(DB_FILE_PATH);
+export function createDatabaseConnection(customPath?: string): NocDatabase {
+  const targetPath = customPath || process.env.NOC_DB_PATH || DB_FILE_PATH;
+  const rawDb = new DatabaseSync(targetPath);
 
   const dbWrapper: NocDatabase = {
     raw: rawDb,

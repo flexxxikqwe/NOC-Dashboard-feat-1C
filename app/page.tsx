@@ -28,8 +28,6 @@ import {
   User,
 } from 'lucide-react';
 import type { DashboardIncidentRow, DashboardWorkplaceRow } from '@/app/api/v1/dashboard/data/route';
-
-const SUPPORT_PASSWORD = 'SuperSupportPass2026!';
 const REFRESH_INTERVAL_SECONDS = 20;
 
 /**
@@ -1227,19 +1225,13 @@ export default function NocDashboardPage() {
                           )}
                         </div>
 
-                        {/* Пароль поддержки */}
+                        {/* Режим авторизации */}
                         <div className="flex items-center justify-between pt-1 border-t border-zinc-850 text-xs">
-                          <span className="text-zinc-500">Пароль:</span>
-                          <button
-                            onClick={() => copyToClipboard(SUPPORT_PASSWORD, `wp-pass-${wp.id}`)}
-                            className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-200 cursor-pointer text-xs"
-                            title="Скопировать пароль AnyDesk"
-                          >
-                            <Key className="w-3 h-3 text-zinc-500" />
-                            <span>
-                              {copiedKey === `wp-pass-${wp.id}` ? 'Скопирован' : 'Скопировать'}
-                            </span>
-                          </button>
+                          <span className="text-zinc-500">Авторизация:</span>
+                          <span className="inline-flex items-center gap-1 text-zinc-400 text-xs" title="Безопасный доступ: подключение по ID с подтверждением кассиром">
+                            <Key className="w-3 h-3 text-emerald-500/70" />
+                            <span>Запрос у кассира</span>
+                          </span>
                         </div>
                       </div>
 
@@ -1314,16 +1306,10 @@ export default function NocDashboardPage() {
                   <span className="text-zinc-600">·</span>
                   <span>В архиве: {inspectedData.resolvedIncidents.length}</span>
                   <span className="text-zinc-600">·</span>
-                  <button
-                    onClick={() => copyToClipboard(SUPPORT_PASSWORD, 'inspect-modal-pass')}
-                    className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-200 cursor-pointer"
-                    title="Скопировать пароль AnyDesk"
-                  >
-                    <Key className="w-3 h-3 text-zinc-400" />
-                    <span>
-                      {copiedKey === 'inspect-modal-pass' ? 'Скопирован' : 'Пароль кассы'}
-                    </span>
-                  </button>
+                  <span className="inline-flex items-center gap-1 text-zinc-400 text-xs" title="Динамический доступ без статических паролей">
+                    <Key className="w-3 h-3 text-emerald-500/70" />
+                    <span>Доступ по ID кассы</span>
+                  </span>
                 </div>
               </div>
 

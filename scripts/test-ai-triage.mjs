@@ -191,7 +191,12 @@ async function runAiTriageTests() {
   }
 }
 
-runAiTriageTests().catch((err) => {
-  console.error('\n❌ ОШИБКА ПРИ ТЕСТИРОВАНИИ AI-TRIAGE:', err);
-  process.exit(1);
-});
+runAiTriageTests()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error('\n❌ ОШИБКА ПРИ ТЕСТИРОВАНИИ AI-TRIAGE:', err);
+    process.exit(1);
+  });
+
