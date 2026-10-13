@@ -208,6 +208,45 @@ if defined NOC_DEVICE_TOKEN (
     echo [ИНФО] Токен устройства: не задан (задайте через NOC_TOKEN или в %CONFIG_PATH%).
 )
 
+:: Настройка каталога очереди Spool (%ProgramData%\1C-NOC\spool)
+set "SPOOL_DIR=%NOC_DIR%\spool"
+if not exist "%SPOOL_DIR%" mkdir "%SPOOL_DIR%" >nul 2>&1
+if not exist "%SPOOL_DIR%" (
+    echo [ОШИБКА] Не удалось создать каталог очереди "%SPOOL_DIR%"!
+    goto cleanup_and_exit_fail
+)
+
+:: Настройка ACL очереди spool:
+:: Языково-независимые Well-Known SID:
+:: *S-1-5-32-544 (Administrators): (OI)(CI)F - полный доступ (папка и дочерние объекты)
+:: *S-1-5-18     (SYSTEM):         (OI)(CI)F - полный доступ для фоновой службы (папка и дочерние объекты)
+:: *S-1-3-0      (CREATOR OWNER):  (OI)(CI)(IO)F - создатель файла получает полный доступ к своему файлу (необходимо для MoveFileEx DELETE)
+:: *S-1-5-32-545 (Users):          (RD,WD,RA,REA,X,S) - права ТОЛЬКО НА ПАПКУ (без (OI)/(CI)!): создание файлов (WD), листинг для Backpressure (RD).
+::                                 Дочерние файлы НЕ наследуют WD для Users, что исключает чтение/модификацию чужих файлов.
+icacls "%SPOOL_DIR%" /inheritance:r /grant:r "*S-1-5-32-544":(OI)(CI)F /grant:r "*S-1-5-18":(OI)(CI)F /grant:r "*S-1-3-0":(OI)(CI)(IO)F /grant:r "*S-1-5-32-545":(RD,WD,RA,REA,X,S) >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ОШИБКА] Не удалось настроить права доступа ACL (icacls) на каталог очереди "%SPOOL_DIR%"!
+    goto cleanup_and_exit_fail
+)
+
+:: Настройка каталога карантина (%ProgramData%\1C-NOC\quarantine)
+set "QUARANTINE_DIR=%NOC_DIR%\quarantine"
+if not exist "%QUARANTINE_DIR%" mkdir "%QUARANTINE_DIR%" >nul 2>&1
+if not exist "%QUARANTINE_DIR%" (
+    echo [ОШИБКА] Не удалось создать каталог карантина "%QUARANTINE_DIR%"!
+    goto cleanup_and_exit_fail
+)
+
+:: Карантин доступен ТОЛЬКО службе SYSTEM и Администраторам
+icacls "%QUARANTINE_DIR%" /inheritance:r /grant:r "*S-1-5-32-544":(OI)(CI)F /grant:r "*S-1-5-18":(OI)(CI)F >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ОШИБКА] Не удалось настроить права доступа ACL (icacls) на каталог карантина "%QUARANTINE_DIR%"!
+    goto cleanup_and_exit_fail
+)
+
+echo [ИНФО] Каталоги очереди (spool) и карантина (quarantine) инициализированы.
+echo       Права настроены по SID (*S-1-3-0 CREATOR OWNER:F, *S-1-5-32-545 Users:RD,WD,RA,REA,X,S [папка]).
+
 :: Фиксация архитектурного блокера
 echo [АРХИТЕКТУРНЫЙ БЛОКЕР] В файловой 1С серверный BSL-код исполняется в контексте кассира (Users).
 echo                      Полная изоляция секрета будет обеспечена на Фазе 4.2 через фоновую службу Windows.
