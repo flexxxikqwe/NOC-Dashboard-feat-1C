@@ -211,6 +211,12 @@ IngestResult SpoolWatcher::ProcessSingleFile(const std::string& filepath, const 
             Log(LogLevel::INFO_LVL, "Duplicate event cleaned: " + envelope.event_id + 
                                     " (hash: " + envelope.sha256_hash.substr(0, 8) + "...)");
             return IngestResult::DUPLICATE_CLEANED;
+        } else if (res.status == db::EnqueueStatus::COLLISION_DETECTED) {
+            // Одинаковый GUID, но другое содержимое -> изолируем в карантин для разбора инцидента
+            std::string q_err;
+            QuarantineFile(filepath, "COLLISION_EVENT_ID", q_err);
+            Log(LogLevel::WARN_LVL, "Colliding event quarantined: " + envelope.event_id + " (" + filename + ")");
+            return IngestResult::QUARANTINED_INVALID;
         } else {
             // Ошибка БД или исчерпание лимита -> оставляем файл в spool для повтора
             Log(LogLevel::ERROR_LVL, "Failed to enqueue " + filename + ": " + res.message);

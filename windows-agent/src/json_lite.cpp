@@ -1,7 +1,8 @@
 #include "json_lite.hpp"
 #include <cctype>
 #include <cmath>
-#include <charconv>
+#include <cstdlib>
+#include <sstream>
 
 namespace noc::json {
 
@@ -327,8 +328,10 @@ bool Parser::ParseString(std::string& str) {
                         else if (h >= 'A' && h <= 'F') codepoint |= (h - 'A' + 10);
                         else { SetError("Invalid hex in unicode escape"); return false; }
                     }
-                    // Handle UTF-16 surrogate pairs
+                    
+                    // Строгая обработка суррогатных пар UTF-16
                     if (codepoint >= 0xD800 && codepoint <= 0xDBFF) {
+                        // High surrogate, обязан продолжаться парой \uDC00..\uDFFF
                         if (Peek() == '\\') {
                             size_t saved = pos_;
                             Get(); // '\\'
@@ -348,15 +351,24 @@ bool Parser::ParseString(std::string& str) {
                                 if (ok && low >= 0xDC00 && low <= 0xDFFF) {
                                     codepoint = 0x10000 + (((codepoint & 0x3FF) << 10) | (low & 0x3FF));
                                 } else {
-                                    pos_ = saved; // rollback
+                                    SetError("Unpaired UTF-16 high surrogate in escape sequence");
+                                    return false;
                                 }
                             } else {
                                 pos_ = saved;
+                                SetError("Unpaired UTF-16 high surrogate in escape sequence");
+                                return false;
                             }
+                        } else {
+                            SetError("Unpaired UTF-16 high surrogate in escape sequence");
+                            return false;
                         }
+                    } else if (codepoint >= 0xDC00 && codepoint <= 0xDFFF) {
+                        SetError("Isolated UTF-16 low surrogate without high surrogate");
+                        return false;
                     }
 
-                    // Encode codepoint to UTF-8
+                    // Кодирование кодовой точки в правильный UTF-8
                     if (codepoint <= 0x7F) {
                         str += static_cast<char>(codepoint);
                     } else if (codepoint <= 0x7FF) {
@@ -426,18 +438,41 @@ bool Parser::ParseNumber(Value& val) {
     }
 
     std::string_view num_str = text_.substr(start, pos_ - start);
+    // Проверка длины экспоненты на предотвращение атак переполнения
+    if (num_str.size() > 64) {
+        SetError("Number token exceeds maximum allowed length (64 chars)");
+        return false;
+    }
+
     try {
-        double d = std::stod(std::string(num_str));
+        std::string s(num_str);
+        char* endptr = nullptr;
+        double d = std::strtod(s.c_str(), &endptr);
+        if (endptr != s.c_str() + s.size()) {
+            SetError("Malformed number: " + s);
+            return false;
+        }
         val = Value(d);
         return true;
     } catch (...) {
-        SetError("Numeric overflow or invalid double");
+        SetError("Numeric conversion exception");
         return false;
     }
 }
 
 bool Parser::ParseArray(Value& val) {
     if (Get() != '[') { SetError("Expected '['"); return false; }
+    if (depth_ >= MAX_NESTING_DEPTH) {
+        SetError("Exceeded maximum JSON nesting depth limit (32)");
+        return false;
+    }
+    depth_++;
+
+    struct DepthGuard {
+        size_t& d;
+        ~DepthGuard() { if (d > 0) d--; }
+    } guard{depth_};
+
     Array arr;
     SkipWhitespace();
     if (Peek() == ']') {
@@ -475,6 +510,17 @@ bool Parser::ParseArray(Value& val) {
 
 bool Parser::ParseObject(Value& val) {
     if (Get() != '{') { SetError("Expected '{'"); return false; }
+    if (depth_ >= MAX_NESTING_DEPTH) {
+        SetError("Exceeded maximum JSON nesting depth limit (32)");
+        return false;
+    }
+    depth_++;
+
+    struct DepthGuard {
+        size_t& d;
+        ~DepthGuard() { if (d > 0) d--; }
+    } guard{depth_};
+
     Object obj;
     SkipWhitespace();
     if (Peek() == '}') {
@@ -491,6 +537,12 @@ bool Parser::ParseObject(Value& val) {
         }
         std::string key;
         if (!ParseString(key)) return false;
+
+        // Строгая защита от дублирования ключей
+        if (obj.find(key) != obj.end()) {
+            SetError("Duplicate key in object: '" + key + "'");
+            return false;
+        }
 
         SkipWhitespace();
         if (Get() != ':') {
@@ -559,27 +611,45 @@ bool Parser::ParseSpoolEnvelope(const std::string& json_text, SpoolEnvelope& out
     }
     out.schema_version = sv->AsString();
 
-    // 2. event_id (GUID check)
+    // 2. event_id (GUID 8-4-4-4-12 hex)
     const auto* eid = root.Find("event_id");
     if (!eid || !eid->IsString() || eid->AsString().empty()) {
         out_error = "Missing or empty 'event_id'";
         return false;
     }
     const std::string& guid_str = eid->AsString();
-    if (guid_str.size() != 36 || guid_str[8] != '-' || guid_str[13] != '-' || 
-        guid_str[18] != '-' || guid_str[23] != '-') {
-        out_error = "Invalid GUID format for 'event_id': " + guid_str;
+    if (guid_str.size() != 36) {
+        out_error = "Invalid GUID length for 'event_id': " + guid_str;
         return false;
+    }
+    for (size_t i = 0; i < 36; ++i) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (guid_str[i] != '-') {
+                out_error = "Invalid GUID format for 'event_id': missing '-' at position " + std::to_string(i);
+                return false;
+            }
+        } else {
+            char ch = guid_str[i];
+            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))) {
+                out_error = "Invalid hex character in event_id GUID: " + std::string(1, ch);
+                return false;
+            }
+        }
     }
     out.event_id = guid_str;
 
-    // 3. timestamp_utc
+    // 3. timestamp_utc (ISO 8601 UTC)
     const auto* ts = root.Find("timestamp_utc");
     if (!ts || !ts->IsString() || ts->AsString().empty()) {
         out_error = "Missing or empty 'timestamp_utc'";
         return false;
     }
-    out.timestamp_utc = ts->AsString();
+    const std::string& ts_str = ts->AsString();
+    if (ts_str.back() != 'Z' || ts_str.size() < 19) {
+        out_error = "Invalid ISO 8601 UTC format for 'timestamp_utc' (must end with 'Z'): " + ts_str;
+        return false;
+    }
+    out.timestamp_utc = ts_str;
 
     // 4. source
     const auto* src = root.Find("source");
@@ -641,17 +711,25 @@ bool Parser::ParseSpoolEnvelope(const std::string& json_text, SpoolEnvelope& out
     // payload.warnings
     out.warnings.clear();
     if (const auto* w = pl->Find("warnings")) {
-        if (w->IsArray()) {
-            for (const auto& item : w->AsArray()) {
-                if (item.IsString()) {
-                    out.warnings.push_back(item.AsString());
-                }
+        if (!w->IsArray()) {
+            out_error = "Field 'payload.warnings' must be an Array";
+            return false;
+        }
+        for (const auto& item : w->AsArray()) {
+            if (!item.IsString()) {
+                out_error = "Elements in 'payload.warnings' must be Strings";
+                return false;
             }
+            out.warnings.push_back(item.AsString());
         }
     }
 
     // payload.runtime_errors (dumped as raw JSON for DB/API)
     if (const auto* re = pl->Find("runtime_errors")) {
+        if (!re->IsArray()) {
+            out_error = "Field 'payload.runtime_errors' must be an Array";
+            return false;
+        }
         out.runtime_errors_raw_json = re->Dump();
     } else {
         out.runtime_errors_raw_json = "[]";
@@ -659,6 +737,10 @@ bool Parser::ParseSpoolEnvelope(const std::string& json_text, SpoolEnvelope& out
 
     // payload.health_checks (dumped as raw JSON)
     if (const auto* hc = pl->Find("health_checks")) {
+        if (!hc->IsArray()) {
+            out_error = "Field 'payload.health_checks' must be an Array";
+            return false;
+        }
         out.health_checks_raw_json = hc->Dump();
     } else {
         out.health_checks_raw_json = "[]";
@@ -666,10 +748,18 @@ bool Parser::ParseSpoolEnvelope(const std::string& json_text, SpoolEnvelope& out
 
     // payload.one_c_info
     if (const auto* oci = pl->Find("one_c_info")) {
-        if (oci->IsObject()) {
-            if (const auto* pv = oci->Find("platform_version")) out.one_c_info.platform_version = pv->AsString();
-            if (const auto* cn = oci->Find("configuration_name")) out.one_c_info.configuration_name = cn->AsString();
-            if (const auto* cmn = oci->Find("computer_name")) out.one_c_info.computer_name = cmn->AsString();
+        if (!oci->IsObject()) {
+            out_error = "Field 'payload.one_c_info' must be an Object";
+            return false;
+        }
+        if (const auto* pv = oci->Find("platform_version")) {
+            if (pv->IsString()) out.one_c_info.platform_version = pv->AsString();
+        }
+        if (const auto* cn = oci->Find("configuration_name")) {
+            if (cn->IsString()) out.one_c_info.configuration_name = cn->AsString();
+        }
+        if (const auto* cmn = oci->Find("computer_name")) {
+            if (cmn->IsString()) out.one_c_info.computer_name = cmn->AsString();
         }
     }
 

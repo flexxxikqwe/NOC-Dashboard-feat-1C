@@ -1,0 +1,81 @@
+name: Windows Agent CI (MSVC x64 & x86)
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'windows-agent/**'
+      - '.github/workflows/windows-agent.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'windows-agent/**'
+      - '.github/workflows/windows-agent.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build & Test Windows Native Service (${{ matrix.arch }})
+    runs-on: windows-2022
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            cmake_arch: x64
+            build_dir: build-x64
+          - arch: x86
+            cmake_arch: Win32
+            build_dir: build-x86
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake (${{ matrix.arch }})
+        run: |
+          cmake -B ${{ matrix.build_dir }} -S windows-agent -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build MSVC Release Binary (${{ matrix.arch }})
+        run: |
+          cmake --build ${{ matrix.build_dir }} --config Release --parallel
+
+      - name: Run CTest Unit Tests (${{ matrix.arch }})
+        run: |
+          ctest --test-dir ${{ matrix.build_dir }} -C Release --output-on-failure
+
+      - name: Execute Test Suite Directly
+        shell: powershell
+        run: |
+          $testExe = "${{ matrix.build_dir }}\Release\noc_agent_tests.exe"
+          if (Test-Path $testExe) {
+            & $testExe
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Unit tests failed with exit code $LASTEXITCODE"
+              exit $LASTEXITCODE
+            }
+          } else {
+            Write-Error "Test executable not found: $testExe"
+            exit 1
+          }
+
+      - name: Test Service CLI Info
+        shell: powershell
+        run: |
+          $agentExe = "${{ matrix.build_dir }}\Release\noc-agent.exe"
+          if (Test-Path $agentExe) {
+            & $agentExe --version
+          }
+
+      - name: Upload Build Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: noc-windows-agent-${{ matrix.arch }}
+          path: |
+            ${{ matrix.build_dir }}/Release/noc-agent.exe
+            ${{ matrix.build_dir }}/Release/noc-agent.pdb
+            ${{ matrix.build_dir }}/Release/noc_agent_tests.exe
+            ${{ matrix.build_dir }}/Testing/Temporary/LastTest.log
+          if-no-files-found: warn

@@ -89,6 +89,8 @@ private:
 
     std::string_view text_;
     size_t pos_ = 0;
+    size_t depth_ = 0;
+    static constexpr size_t MAX_NESTING_DEPTH = 32;
     std::string error_;
 };
 

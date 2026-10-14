@@ -34,7 +34,7 @@ $(BIN_DIR)/noc-agent-x64.exe: src/main.cpp $(SRCS) $(SQLITE_SRC)
 	@mkdir -p $(BIN_DIR)
 	$(WIN64_CC) $(SQLITE_CFLAGS) -c $(SQLITE_SRC) -o $(BIN_DIR)/sqlite3-x64.o
 	$(WIN64_CXX) $(CXXFLAGS) src/main.cpp $(SRCS) $(BIN_DIR)/sqlite3-x64.o \
-		-static -static-libgcc -static-libstdc++ -ladvapi32 -lws2_32 -o $@
+		-static -static-libgcc -static-libstdc++ -ladvapi32 -lws2_32 -lbcrypt -o $@
 	@echo "Built 64-bit Windows Agent: $@"
 
 # Сборка Windows 32-bit исполняемого файла (.exe)
@@ -44,7 +44,7 @@ $(BIN_DIR)/noc-agent-x86.exe: src/main.cpp $(SRCS) $(SQLITE_SRC)
 	@mkdir -p $(BIN_DIR)
 	$(WIN32_CC) $(SQLITE_CFLAGS) -c $(SQLITE_SRC) -o $(BIN_DIR)/sqlite3-x86.o
 	$(WIN32_CXX) $(CXXFLAGS) src/main.cpp $(SRCS) $(BIN_DIR)/sqlite3-x86.o \
-		-static -static-libgcc -static-libstdc++ -ladvapi32 -lws2_32 -o $@
+		-static -static-libgcc -static-libstdc++ -ladvapi32 -lws2_32 -lbcrypt -o $@
 	@echo "Built 32-bit Windows Agent: $@"
 
 clean:

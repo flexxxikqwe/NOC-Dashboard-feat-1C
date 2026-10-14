@@ -2,12 +2,160 @@
 #include <iomanip>
 #include <sstream>
 #include <cstring>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
 
 namespace noc::crypto {
 
 namespace {
 
-// Стандартная реализация SHA-256 (FIPS 180-4)
+// RAII обертка для дескриптора крипто-провайдера BCrypt
+struct ScopedBcryptAlg {
+    BCRYPT_ALG_HANDLE handle = nullptr;
+    ~ScopedBcryptAlg() {
+        if (handle) {
+            ::BCryptCloseAlgorithmProvider(handle, 0);
+            handle = nullptr;
+        }
+    }
+    ScopedBcryptAlg(const ScopedBcryptAlg&) = delete;
+    ScopedBcryptAlg& operator=(const ScopedBcryptAlg&) = delete;
+    ScopedBcryptAlg() = default;
+};
+
+// RAII обертка для дескриптора хеша BCrypt
+struct ScopedBcryptHash {
+    BCRYPT_HASH_HANDLE handle = nullptr;
+    ~ScopedBcryptHash() {
+        if (handle) {
+            ::BCryptDestroyHash(handle);
+            handle = nullptr;
+        }
+    }
+    ScopedBcryptHash(const ScopedBcryptHash&) = delete;
+    ScopedBcryptHash& operator=(const ScopedBcryptHash&) = delete;
+    ScopedBcryptHash() = default;
+};
+
+} // anonymous namespace
+
+std::string ComputeSha256(const void* data, size_t size) {
+    ScopedBcryptAlg alg;
+    NTSTATUS status = ::BCryptOpenAlgorithmProvider(
+        &alg.handle,
+        BCRYPT_SHA256_ALGORITHM,
+        nullptr,
+        0
+    );
+
+    if (!BCRYPT_SUCCESS(status) || !alg.handle) {
+        return "";
+    }
+
+    // Запрос требуемого размера hash object для полной совместимости с Windows 7 / POSReady 7
+    DWORD hash_obj_size = 0;
+    DWORD data_len = 0;
+    status = ::BCryptGetProperty(
+        alg.handle,
+        BCRYPT_OBJECT_LENGTH,
+        reinterpret_cast<PUCHAR>(&hash_obj_size),
+        sizeof(hash_obj_size),
+        &data_len,
+        0
+    );
+
+    if (!BCRYPT_SUCCESS(status) || hash_obj_size == 0) {
+        return "";
+    }
+
+    std::vector<uint8_t> hash_object(hash_obj_size, 0);
+
+    ScopedBcryptHash hash;
+    status = ::BCryptCreateHash(
+        alg.handle,
+        &hash.handle,
+        hash_object.data(),
+        static_cast<ULONG>(hash_object.size()),
+        nullptr,
+        0,
+        0
+    );
+
+    if (!BCRYPT_SUCCESS(status) || !hash.handle) {
+        return "";
+    }
+
+    // Хеширование данных порциями (защита от переполнения ULONG при очень больших размерах)
+    if (size > 0 && data != nullptr) {
+        const uint8_t* byte_ptr = static_cast<const uint8_t*>(data);
+        size_t remaining = size;
+        const size_t kChunkSize = 64 * 1024 * 1024; // 64 MB
+
+        while (remaining > 0) {
+            ULONG to_hash = static_cast<ULONG>((remaining > kChunkSize) ? kChunkSize : remaining);
+            status = ::BCryptHashData(
+                hash.handle,
+                reinterpret_cast<PUCHAR>(const_cast<uint8_t*>(byte_ptr)),
+                to_hash,
+                0
+            );
+
+            if (!BCRYPT_SUCCESS(status)) {
+                return "";
+            }
+
+            byte_ptr += to_hash;
+            remaining -= to_hash;
+        }
+    }
+
+    uint8_t hash_bytes[32] = {0};
+    status = ::BCryptFinishHash(
+        hash.handle,
+        hash_bytes,
+        sizeof(hash_bytes),
+        0
+    );
+
+    if (!BCRYPT_SUCCESS(status)) {
+        return "";
+    }
+
+    char hex_str[65];
+    for (int i = 0; i < 32; ++i) {
+        snprintf(hex_str + (i * 2), 3, "%02x", hash_bytes[i]);
+    }
+    hex_str[64] = '\0';
+    return std::string(hex_str, 64);
+}
+
+std::string ComputeSha256(const std::string& data) {
+    return ComputeSha256(data.data(), data.size());
+}
+
+} // namespace noc::crypto
+
+#else
+
+// ============================================================================
+// POSIX / Non-Windows Fallback (FIPS 180-4 reference implementation)
+// Используется для модульных тестов и CI в Linux/macOS средах
+// ============================================================================
+
+namespace noc::crypto {
+
+namespace {
+
 inline uint32_t RotR(uint32_t x, uint32_t n) {
     return (x >> n) | (x << (32 - n));
 }
@@ -104,8 +252,8 @@ void Sha256Transform(uint32_t state[8], const uint8_t buffer[64]) {
 }
 
 void Sha256Update(Sha256Context* ctx, const uint8_t* data, size_t len) {
-    size_t buffer_idx = (ctx->count / 8) % 64;
-    ctx->count += static_cast<uint64_t>(len) * 8;
+    size_t buffer_idx = static_cast<size_t>((ctx->count / 8) % 64);
+    ctx->count += len * 8;
 
     size_t part_len = 64 - buffer_idx;
     size_t i = 0;
@@ -153,17 +301,19 @@ void Sha256Final(Sha256Context* ctx, uint8_t digest[32]) {
 std::string ComputeSha256(const void* data, size_t size) {
     Sha256Context ctx;
     Sha256Init(&ctx);
-    Sha256Update(&ctx, static_cast<const uint8_t*>(data), size);
+    if (size > 0 && data != nullptr) {
+        Sha256Update(&ctx, static_cast<const uint8_t*>(data), size);
+    }
 
     uint8_t digest[32];
     Sha256Final(&ctx, digest);
 
-    std::ostringstream ss;
-    ss << std::hex << std::setfill('0');
+    char hex_str[65];
     for (int i = 0; i < 32; ++i) {
-        ss << std::setw(2) << static_cast<int>(digest[i]);
+        snprintf(hex_str + (i * 2), 3, "%02x", digest[i]);
     }
-    return ss.str();
+    hex_str[64] = '\0';
+    return std::string(hex_str, 64);
 }
 
 std::string ComputeSha256(const std::string& data) {
@@ -171,3 +321,5 @@ std::string ComputeSha256(const std::string& data) {
 }
 
 } // namespace noc::crypto
+
+#endif

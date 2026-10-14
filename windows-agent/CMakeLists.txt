@@ -35,10 +35,12 @@ add_executable(noc-agent
 )
 
 if (WIN32 OR MINGW)
-    target_link_libraries(noc-agent PRIVATE advapi32 ws2_32)
-    set_target_properties(noc-agent PROPERTIES
-        LINK_FLAGS "-static -static-libgcc -static-libstdc++"
-    )
+    target_link_libraries(noc-agent PRIVATE advapi32 ws2_32 bcrypt)
+    if (MINGW)
+        set_target_properties(noc-agent PROPERTIES
+            LINK_FLAGS "-static -static-libgcc -static-libstdc++"
+        )
+    endif()
 endif()
 
 # Тестовый исполняемый файл
@@ -49,7 +51,7 @@ add_executable(noc_agent_tests
 )
 
 if (WIN32 OR MINGW)
-    target_link_libraries(noc_agent_tests PRIVATE advapi32 ws2_32)
+    target_link_libraries(noc_agent_tests PRIVATE advapi32 ws2_32 bcrypt)
 else()
     target_link_libraries(noc_agent_tests PRIVATE pthread dl)
 endif()

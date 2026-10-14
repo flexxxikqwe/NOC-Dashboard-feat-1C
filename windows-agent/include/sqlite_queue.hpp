@@ -61,6 +61,12 @@ public:
     // Очистка успешно доставленных старых записей
     bool PruneSent(int64_t older_than_seconds, std::string& out_error);
 
+    // Выполнение пассивного checkpoint для удержания размера WAL в границах
+    bool Checkpoint(std::string& out_error);
+
+    // Проверка целостности БД (quick_check)
+    bool CheckIntegrity(std::string& out_error);
+
 private:
     bool Execute(const char* sql, std::string& out_error);
     int64_t GetDatabaseFileSizeBytes();
