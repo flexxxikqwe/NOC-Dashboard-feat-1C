@@ -692,10 +692,17 @@ void TestWinHttpTransportLogic() {
     cfg.server_url = "https://noc.company.local:3000";
     manager.SetConfig(cfg);
 
-    mock_client->SetHandler([](const std::string& url, const std::string& token, const std::string& payload) {
-        TEST_ASSERT(url == "https://noc.company.local:3000/api/v1/telemetry", "Target URL matches Ingestion API");
-        TEST_ASSERT(token == "dev-secret-token-2026", "Bearer token passed to client");
-        TEST_ASSERT(payload.find("Магазин Розница 1") != std::string::npos, "Payload contains shop name");
+    bool handler_called = false;
+    std::string captured_url;
+    std::string captured_token;
+    std::string captured_payload;
+
+    mock_client->SetHandler([&](const std::string& url, const std::string& token, const std::string& payload) -> transport::HttpResponse {
+        handler_called = true;
+        captured_url = url;
+        captured_token = token;
+        captured_payload = payload;
+
         transport::HttpResponse resp;
         resp.status_code = 200;
         resp.body = "{\"success\":true,\"workplace_id\":\"wp_123\",\"incidents_recorded\":1}";
@@ -703,6 +710,10 @@ void TestWinHttpTransportLogic() {
     });
 
     sent = manager.ProcessPendingBatch(batch_err);
+    TEST_ASSERT(handler_called, "Mock handler was invoked");
+    TEST_ASSERT(captured_url == "https://noc.company.local:3000/api/v1/telemetry", "Target URL matches Ingestion API");
+    TEST_ASSERT(captured_token == "dev-secret-token-2026", "Bearer token passed to client");
+    TEST_ASSERT(captured_payload.find("Магазин Розница 1") != std::string::npos, "Payload contains shop name");
     TEST_ASSERT(sent == 1, "Successfully sent 1 event");
     TEST_ASSERT(mock_client->GetCallCount() == 1, "Mock client called once");
 
@@ -718,7 +729,7 @@ void TestWinHttpTransportLogic() {
     env.sha256_hash = crypto::ComputeSha256(env.raw_json);
     queue.Enqueue(env);
 
-    mock_client->SetHandler([](const std::string&, const std::string&, const std::string&) {
+    mock_client->SetHandler([](const std::string&, const std::string&, const std::string&) -> transport::HttpResponse {
         transport::HttpResponse r;
         r.status_code = 401;
         r.body = "{\"error\":\"Unauthorized. Invalid or missing Bearer token.\"}";
@@ -737,7 +748,7 @@ void TestWinHttpTransportLogic() {
     cfg.poll_interval_ms = 100;
     manager.SetConfig(cfg);
 
-    mock_client->SetHandler([](const std::string&, const std::string&, const std::string&) {
+    mock_client->SetHandler([](const std::string&, const std::string&, const std::string&) -> transport::HttpResponse {
         transport::HttpResponse r;
         r.status_code = 429;
         r.retry_after_seconds = 45;
@@ -755,7 +766,7 @@ void TestWinHttpTransportLogic() {
     TEST_ASSERT(manager_retry.GetRemainingBackoffSeconds() >= 40, "Retry-After 45s respected");
 
     // Проверка 6.5.6: Сетевой сбой (Network Error / Timeout) -> сохранение в очереди
-    mock_client->SetHandler([](const std::string&, const std::string&, const std::string&) {
+    mock_client->SetHandler([](const std::string&, const std::string&, const std::string&) -> transport::HttpResponse {
         transport::HttpResponse r;
         r.status_code = 0;
         r.network_error = true;

@@ -320,6 +320,20 @@
   - В C++ юнит-тесты `windows-agent/tests/test_agent.cpp` включен блок `TestWinHttpTransportLogic`.
   - Интеграция в `.github/workflows/windows-agent.yml`, `CMakeLists.txt` и `Makefile`.
 
+#### HOTFIX 4.3.0.2 — Mock Handler Return Type and WinHTTP Constant
+- **Статус: Исправлено в исходниках (`IMPLEMENTED IN SOURCE / NOT VERIFIED ON WINDOWS`).**
+- **1. Устранение несовместимости типов возврата в lambda MockHttpClient (`C3487`, `C3499`, `C2664`):**
+  - Макрос `TEST_ASSERT` разворачивается в `do { ... return; } while(0)`, что приводило к конфликту возвращаемых типов (`void` против `HttpResponse`) внутри лямбды в `TestWinHttpTransportLogic`.
+  - Вызовы `TEST_ASSERT` вынесены наружу из лямбды, проверка выполняется над захваченными переменными (`captured_url`, `captured_token`, `captured_payload`, `handler_called`), добавлен явный тип возврата `-> transport::HttpResponse`.
+- **2. Исправление опечатки в имени константы Windows SDK:**
+  - В `windows-agent/src/winhttp_transport.cpp:339` константа `WINHTTP_NO_REFERRER` исправлена на стандартное имя Windows SDK `WINHTTP_NO_REFERER` (с одной 'R').
+- **3. Верификация:**
+  - `node scripts/test-phase43-transport.mjs` — PASS (5 из 5 блоков).
+  - `node scripts/test-phase42-agent-ingestion.mjs` — PASS (5 из 5 блоков).
+  - `node scripts/test-zero-freeze-spool.mjs` — PASS (5 из 5 блоков).
+  - `node scripts/test-telemetry.mjs` — PASS (4 из 4 тестов).
+  - `compile_applet` & `lint_applet` — PASS (0 ошибок).
+
 #### Phase 4.4 — AnyDesk/RuDesktop ID discovery and configuration security
 - Реализация безопасного модуля чтения идентификаторов удаленного доступа внутри службы Windows (контекст `SYSTEM`):
   - Парсинг `%ProgramData%\AnyDesk\system.conf` (`ad.anydesk.id`) и `%ProgramData%\RuDesktop\rudesktop.cfg`.

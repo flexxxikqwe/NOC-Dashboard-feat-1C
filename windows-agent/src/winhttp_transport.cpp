@@ -336,7 +336,7 @@ HttpResponse WinHttpClient::Post(
         L"POST",
         w_path.c_str(),
         nullptr,
-        WINHTTP_NO_REFERRER,
+        WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES,
         flags
     );

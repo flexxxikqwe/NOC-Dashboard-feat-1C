@@ -303,5 +303,16 @@ make win32
    - Цели `noc-agent` и `noc_agent_tests` компилируют `winhttp_transport.cpp` и линкуются с системной библиотекой `winhttp` (`target_link_libraries(... winhttp)`).
    - В логе предыдущей сборки отдельная строка `winhttp_transport.cpp` отсутствовала, так как MSBuild прерывал параллельную компиляцию сразу при фатальной ошибке парсинга `test_agent.cpp`. С устранением синтаксической ошибки обе цели компилируются и линкуются штатно.
 
+## HOTFIX 4.3.0.2 (Fix Mock Handler Return Type and WinHTTP Constant)
+
+1. **Устранение несовместимости типов в lambda MockHttpClient (`C3487`, `C3499`, `C2664`):**
+   - В `windows-agent/tests/test_agent.cpp` макрос `TEST_ASSERT` разворачивается в `do { ... return; } while(0)`.
+   - При вызове `mock_client->SetHandler` внутри лямбды находились вызовы `TEST_ASSERT`, что приводило к ветвям с `return;` (возврат `void`) одновременно с `return resp;` (возврат `HttpResponse`).
+   - Компилятор MSVC выводил возвращаемый тип лямбды как `void`, выдавая ошибки C3487 ("all return expressions must deduce to the same type: previously it was void"), C3499 и C2664 (невозможность преобразования лямбды в `MockHttpClient::HandlerFunc`).
+   - **Исправление:** Вызовы `TEST_ASSERT` вынесены наружу из лямбды. Лямбда сохраняет захваченные параметры запроса (`captured_url`, `captured_token`, `captured_payload`, `handler_called`), явно возвращает `transport::HttpResponse`, а все ассерты выполняются после `ProcessPendingBatch`.
+
+2. **Исправление опечатки в константе WinHTTP (`WINHTTP_NO_REFERER`):**
+   - В `windows-agent/src/winhttp_transport.cpp:339` в вызове `WinHttpOpenRequest` константа `WINHTTP_NO_REFERRER` исправлена на стандартное имя Windows SDK `WINHTTP_NO_REFERER` (с одной 'R' согласно API Windows).
+
 
 
