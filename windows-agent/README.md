@@ -314,5 +314,20 @@ make win32
 2. **Исправление опечатки в константе WinHTTP (`WINHTTP_NO_REFERER`):**
    - В `windows-agent/src/winhttp_transport.cpp:339` в вызове `WinHttpOpenRequest` константа `WINHTTP_NO_REFERRER` исправлена на стандартное имя Windows SDK `WINHTTP_NO_REFERER` (с одной 'R' согласно API Windows).
 
+## HOTFIX 4.3.0.3 (Diagnose SHA-256 Failure and Windows Test Crash 0xc0000409)
 
+1. **Диагностика и первопричина расхождения SHA-256 для вектора `The quick brown fox jumps over the lazy dog`:**
+   - В тесте `TestCryptoSha256` (вектор 3.3) в строке 282 ожидаемое значение ошибочно сравнивалось с искаженной строкой `d7a8fbb307d7809469ca9ab400f20f5f99feed17ea2a2dce88a371e63ab1dc1f`.
+   - Фактический криптографический расчет BCrypt CNG на Windows (а также эталон NIST/FIPS 180-4) для точной ASCII-строки из 43 байт `"The quick brown fox jumps over the lazy dog"` равен `d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592`.
+   - В `test_agent.cpp` реализована функция `VerifySha256Vector`, выводящая при несовпадении подробную диагностику: имя теста, входные данные, длину в байтах, ожидаемый хеш, фактически вычисленный хеш, статус BCrypt API (`0x00000000` при успехе).
 
+2. **Диагностика и устранение причин аварийного завершения `0xc0000409` (STATUS_STACK_BUFFER_OVERRUN / __fastfail):**
+   - **Безопасное форматирование hex:** Заменен 32-кратный вызов `snprintf` на стековый буфер `char hex_str[65]` на табличный маппинг байтов `kHexDigits` в `std::string(64, '0')`. Это устраняет любые риски переполнения буфера и срабатывания проверки компилятора `/GS` (Stack Cookie Check).
+   - **Управление памятью и дескрипторами BCrypt CNG:**
+     - Дескрипторы `BCRYPT_ALG_HANDLE` и `BCRYPT_HASH_HANDLE` теперь сохраняются в RAII-обертки только при возврате `BCRYPT_SUCCESS`, предотвращая вызов `BCryptDestroyHash`/`BCryptCloseAlgorithmProvider` на невалидных указателях.
+     - Время жизни буфера `hash_object` строго превосходит время жизни дескриптора хеша: деструктор `ScopedBcryptHash` выполняется до освобождения `std::vector<uint8_t> hash_object`.
+     - Добавлена функция `GetLastCryptoStatus()` для отслеживания `NTSTATUS` каждой операции.
+   - **Изоляция путей файловой системы и защита от необработанных исключений:**
+     - Захардкоженные пути `/tmp/...` заменены на кроссплатформенный `GetTestTempPath(...)` на базе `std::filesystem::temp_directory_path()`, гарантирующий доступность временного каталога на Windows (`%TEMP%`).
+     - Вызовы `fs::directory_iterator` и `fs::last_write_time` снабжены `std::error_code`, исключая выброс `std::filesystem_error`.
+     - Макрос `RUN_TEST` дополнен перехватом `try / catch (const std::exception&)` и `std::flush`, что исключает `std::terminate() -> abort() -> __fastfail(0xc0000409)` при возникновении непредвиденных исключений и гарантирует сброс логов в консоль раннера GitHub Actions.

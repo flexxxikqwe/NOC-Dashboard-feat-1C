@@ -20,10 +20,22 @@ using namespace noc;
 static int g_tests_passed = 0;
 static int g_tests_failed = 0;
 
+static std::string GetTestTempPath(const std::string& filename) {
+    std::error_code ec;
+    fs::path p = fs::temp_directory_path(ec);
+    if (ec || p.empty()) {
+        p = fs::path("/tmp");
+    }
+    p /= filename;
+    fs::create_directories(p.parent_path(), ec);
+    return p.string();
+}
+
+
 #define TEST_ASSERT(cond, msg) \
     do { \
         if (!(cond)) { \
-            std::cerr << "❌ FAILED: " << msg << " (line " << __LINE__ << ")\n"; \
+            std::cerr << "❌ FAILED: " << msg << " (line " << __LINE__ << ")\n" << std::flush; \
             g_tests_failed++; \
             return; \
         } \
@@ -31,14 +43,23 @@ static int g_tests_failed = 0;
 
 #define RUN_TEST(fn) \
     do { \
-        std::cout << "▶ Running " #fn "... "; \
+        std::cout << "▶ Running " #fn "... " << std::flush; \
         int prev_fail = g_tests_failed; \
-        fn(); \
+        try { \
+            fn(); \
+        } catch (const std::exception& ex) { \
+            std::cerr << "\n💥 UNHANDLED EXCEPTION in " #fn ": " << ex.what() << "\n" << std::flush; \
+            g_tests_failed++; \
+        } catch (...) { \
+            std::cerr << "\n💥 UNKNOWN EXCEPTION in " #fn "\n" << std::flush; \
+            g_tests_failed++; \
+        } \
         if (g_tests_failed == prev_fail) { \
-            std::cout << "PASS\n"; \
+            std::cout << "PASS\n" << std::flush; \
             g_tests_passed++; \
         } \
     } while(0)
+
 
 // ============================================================================
 // ТЕСТ 1: Строгий парсер JSON: дубликаты ключей, глубина, суррогаты, числа
@@ -261,45 +282,110 @@ void TestSpoolEnvelopeValidation() {
 }
 
 // ============================================================================
-// ТЕСТ 3: SHA-256 хеширование (NIST test vectors и пустой ввод)
+// ТЕСТ 3: SHA-256 хеширование (NIST test vectors и диагностика)
 // ============================================================================
+
+// Вспомогательная функция диагностической верификации SHA-256 test vector (HOTFIX 4.3.0.3)
+static void VerifySha256Vector(
+    const std::string& test_name,
+    const void* input_data,
+    size_t input_len,
+    const std::string& expected_hash,
+    const std::string& input_display_override = ""
+) {
+    std::string actual_hash = crypto::ComputeSha256(input_data, input_len);
+    uint32_t bcrypt_err = crypto::GetLastCryptoStatus();
+
+    bool match = (actual_hash == expected_hash);
+
+    std::string safe_input;
+    if (!input_display_override.empty()) {
+        safe_input = input_display_override;
+    } else if (input_len == 0) {
+        safe_input = "(empty input, 0 bytes)";
+    } else if (input_len <= 80) {
+        safe_input = "\"" + std::string(static_cast<const char*>(input_data), input_len) + "\"";
+    } else {
+        safe_input = "\"" + std::string(static_cast<const char*>(input_data), 32) + "...\" (" + std::to_string(input_len) + " bytes)";
+    }
+
+    if (!match) {
+        std::cerr << "\n============================================================\n"
+                  << "🔍 SHA-256 DIAGNOSTIC REPORT ON MISMATCH\n"
+                  << "  • Test Name:      " << test_name << "\n"
+                  << "  • Input Data:     " << safe_input << "\n"
+                  << "  • Data Length:    " << input_len << " bytes\n"
+                  << "  • Expected Hash:  " << expected_hash << "\n"
+                  << "  • Actual Hash:    " << actual_hash << "\n"
+                  << "  • Check Result:   " << (match ? "MATCH (PASS)" : "MISMATCH (FAIL)") << "\n";
+        if (bcrypt_err != 0) {
+            std::cerr << "  • BCrypt Status:  0x" << std::hex << std::setw(8) << std::setfill('0') << bcrypt_err << std::dec << "\n";
+        } else {
+            std::cerr << "  • BCrypt Status:  0x00000000 (STATUS_SUCCESS)\n";
+        }
+        std::cerr << "============================================================\n" << std::flush;
+    }
+
+    TEST_ASSERT(match, test_name + " - SHA-256 mismatch: expected " + expected_hash + ", got " + actual_hash);
+}
+
 void TestCryptoSha256() {
-    // 3.1 Тестовый вектор NIST для "abc"
+    // 3.1 Тестовый вектор NIST для "abc" (3 байта)
     // ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
-    std::string h1 = crypto::ComputeSha256("abc");
-    TEST_ASSERT(h1 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", 
-                "SHA-256 for 'abc' must match NIST standard: " + h1);
+    VerifySha256Vector(
+        "3.1 NIST 'abc'",
+        "abc",
+        3,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
 
-    // 3.2 Пустая строка: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-    std::string h_empty = crypto::ComputeSha256("");
-    TEST_ASSERT(h_empty == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 
-                "SHA-256 for empty string must match NIST standard: " + h_empty);
+    // 3.2 Пустая строка (0 байт)
+    // e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+    VerifySha256Vector(
+        "3.2 Empty Input (0 bytes)",
+        "",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
 
-    // 3.3 NIST вектор: "The quick brown fox jumps over the lazy dog"
-    // d7a8fbb307d7809469ca9ab400f20f5f99feed17ea2a2dce88a371e63ab1dc1f
-    std::string fox = "The quick brown fox jumps over the lazy dog";
-    std::string h_fox = crypto::ComputeSha256(fox);
-    TEST_ASSERT(h_fox == "d7a8fbb307d7809469ca9ab400f20f5f99feed17ea2a2dce88a371e63ab1dc1f",
-                "SHA-256 for 'quick brown fox' must match NIST standard: " + h_fox);
+    // 3.3 NIST вектор: "The quick brown fox jumps over the lazy dog" (43 байта, ASCII)
+    // d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592
+    const char* fox_str = "The quick brown fox jumps over the lazy dog";
+    VerifySha256Vector(
+        "3.3 NIST 'The quick brown fox jumps over the lazy dog'",
+        fox_str,
+        43,
+        "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592"
+    );
 
-    // 3.4 NIST вектор: "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+    // 3.4 NIST вектор: 448 бит (56 байт)
+    // "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
     // 248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1
-    std::string nist_448 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
-    std::string h_nist_448 = crypto::ComputeSha256(nist_448);
-    TEST_ASSERT(h_nist_448 == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
-                "SHA-256 for 448-bit NIST string must match");
+    const char* nist_448 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    VerifySha256Vector(
+        "3.4 NIST 448-bit string (56 bytes)",
+        nist_448,
+        56,
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+    );
 
-    // 3.5 Большой буфер (100 КБ)
+    // 3.5 Большой буфер (100 КБ = 102400 байт 'Z')
+    // 40d6102e6a21004e7a9fd9bf58c5a1e6d7bc5860e68e6195ab20d73400c663b5
     std::string large_buf(102400, 'Z');
-    std::string h_large = crypto::ComputeSha256(large_buf);
-    TEST_ASSERT(h_large.size() == 64, "SHA-256 of large buffer must be 64 hex characters");
+    VerifySha256Vector(
+        "3.5 Large buffer (100 KB)",
+        large_buf.data(),
+        large_buf.size(),
+        "40d6102e6a21004e7a9fd9bf58c5a1e6d7bc5860e68e6195ab20d73400c663b5",
+        "102400 repeats of 'Z'"
+    );
 }
 
 // ============================================================================
 // ТЕСТ 4: SQLite долговечность (WAL + synchronous=FULL), дедупликация и коллизии
 // ============================================================================
 void TestSqliteDurabilityAndCollisions() {
-    std::string test_db = "/tmp/test_noc_durability_queue.db";
+    std::string test_db = GetTestTempPath("test_noc_durability_queue.db");
     std::error_code ec;
     fs::remove(test_db, ec);
     fs::remove(test_db + "-wal", ec);
@@ -399,9 +485,9 @@ void TestSqliteDurabilityAndCollisions() {
 // ТЕСТ 5: SpoolWatcher, Карантин коллизий и Crash Recovery
 // ============================================================================
 void TestSpoolWatcherAndQuarantine() {
-    std::string test_spool = "/tmp/test_noc_spool_h";
-    std::string test_quar = "/tmp/test_noc_quarantine_h";
-    std::string test_db = "/tmp/test_noc_spool_db_h.db";
+    std::string test_spool = GetTestTempPath("test_noc_spool_h");
+    std::string test_quar = GetTestTempPath("test_noc_quarantine_h");
+    std::string test_db = GetTestTempPath("test_noc_spool_db_h.db");
 
     std::error_code ec;
     fs::remove_all(test_spool, ec);
@@ -425,7 +511,8 @@ void TestSpoolWatcherAndQuarantine() {
     }
 
     auto old_time = fs::file_time_type::clock::now() - std::chrono::seconds(600);
-    fs::last_write_time(stale_tmp, old_time);
+    std::error_code lwt_ec;
+    fs::last_write_time(stale_tmp, old_time, lwt_ec);
 
     size_t swept = watcher.SweepStaleTmpFiles(300);
     TEST_ASSERT(swept == 1, "Must sweep 1 stale temp file");
@@ -475,10 +562,13 @@ void TestSpoolWatcherAndQuarantine() {
     TEST_ASSERT(!fs::exists(colliding_file), "Colliding file must be removed from spool");
 
     bool found_collision_quar = false;
-    for (const auto& entry : fs::directory_iterator(test_quar)) {
-        if (entry.path().filename().string().find("COLLISION_EVENT_ID") != std::string::npos) {
-            found_collision_quar = true;
-            break;
+    std::error_code qec;
+    if (fs::exists(test_quar, qec)) {
+        for (const auto& entry : fs::directory_iterator(test_quar, qec)) {
+            if (entry.path().filename().string().find("COLLISION_EVENT_ID") != std::string::npos) {
+                found_collision_quar = true;
+                break;
+            }
         }
     }
     TEST_ASSERT(found_collision_quar, "Colliding event must be isolated in quarantine with COLLISION_EVENT_ID");
@@ -494,10 +584,12 @@ void TestSpoolWatcherAndQuarantine() {
     TEST_ASSERT(!fs::exists(corrupt_file), "Corrupt file must be removed from spool");
 
     bool found_corrupt_quar = false;
-    for (const auto& entry : fs::directory_iterator(test_quar)) {
-        if (entry.path().filename().string().find("INVALID_ENVELOPE") != std::string::npos) {
-            found_corrupt_quar = true;
-            break;
+    if (fs::exists(test_quar, qec)) {
+        for (const auto& entry : fs::directory_iterator(test_quar, qec)) {
+            if (entry.path().filename().string().find("INVALID_ENVELOPE") != std::string::npos) {
+                found_corrupt_quar = true;
+                break;
+            }
         }
     }
     TEST_ASSERT(found_corrupt_quar, "Corrupt file must be moved to quarantine with INVALID_ENVELOPE");
@@ -514,10 +606,12 @@ void TestSpoolWatcherAndQuarantine() {
     TEST_ASSERT(!fs::exists(oversized_file), "Oversized file must be removed from spool");
 
     bool found_oversized_quar = false;
-    for (const auto& entry : fs::directory_iterator(test_quar)) {
-        if (entry.path().filename().string().find("OVERSIZED_64KB") != std::string::npos) {
-            found_oversized_quar = true;
-            break;
+    if (fs::exists(test_quar, qec)) {
+        for (const auto& entry : fs::directory_iterator(test_quar, qec)) {
+            if (entry.path().filename().string().find("OVERSIZED_64KB") != std::string::npos) {
+                found_oversized_quar = true;
+                break;
+            }
         }
     }
     TEST_ASSERT(found_oversized_quar, "Oversized file must be moved to quarantine with OVERSIZED_64KB");
@@ -633,7 +727,7 @@ void TestWinHttpTransportLogic() {
     TEST_ASSERT(parsed_ingest["system_info"]["one_c"]["platform_version"].AsString() == "8.3.24.1540", "one_c matches");
 
     // 6.5 Сквозной цикл отправки через MockHttpClient и SqliteQueue
-    std::string test_db = "/tmp/test_noc_transport_queue.db";
+    std::string test_db = GetTestTempPath("test_noc_transport_queue.db");
     std::error_code ec;
     fs::remove(test_db, ec);
     fs::remove(test_db + "-wal", ec);
@@ -807,7 +901,7 @@ int main() {
 
     std::cout << "\n================================================================\n";
     std::cout << "RESULTS: " << g_tests_passed << " PASSED, " << g_tests_failed << " FAILED\n";
-    std::cout << "================================================================\n";
+    std::cout << "================================================================\n" << std::flush;
 
     return (g_tests_failed == 0) ? 0 : 1;
 }

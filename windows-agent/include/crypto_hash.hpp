@@ -10,4 +10,8 @@ namespace noc::crypto {
 std::string ComputeSha256(const void* data, size_t size);
 std::string ComputeSha256(const std::string& data);
 
+// Возвращает код последней криптографической ошибки (BCrypt NTSTATUS на Windows)
+uint32_t GetLastCryptoStatus();
+
 } // namespace noc::crypto
+

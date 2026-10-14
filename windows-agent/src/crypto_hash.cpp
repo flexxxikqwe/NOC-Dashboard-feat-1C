@@ -19,6 +19,12 @@ namespace noc::crypto {
 
 namespace {
 
+static thread_local uint32_t t_last_crypto_status = 0;
+
+inline void SetLastCryptoStatus(uint32_t status) {
+    t_last_crypto_status = status;
+}
+
 // RAII обертка для дескриптора крипто-провайдера BCrypt
 struct ScopedBcryptAlg {
     BCRYPT_ALG_HANDLE handle = nullptr;
@@ -47,20 +53,40 @@ struct ScopedBcryptHash {
     ScopedBcryptHash() = default;
 };
 
+static const char kHexDigits[] = "0123456789abcdef";
+
+inline std::string BytesToHex64(const uint8_t bytes[32]) {
+    std::string hex(64, '0');
+    for (size_t i = 0; i < 32; ++i) {
+        hex[i * 2]     = kHexDigits[(bytes[i] >> 4) & 0x0F];
+        hex[i * 2 + 1] = kHexDigits[bytes[i] & 0x0F];
+    }
+    return hex;
+}
+
 } // anonymous namespace
 
+uint32_t GetLastCryptoStatus() {
+    return t_last_crypto_status;
+}
+
 std::string ComputeSha256(const void* data, size_t size) {
+    SetLastCryptoStatus(0);
+
     ScopedBcryptAlg alg;
+    BCRYPT_ALG_HANDLE h_alg = nullptr;
     NTSTATUS status = ::BCryptOpenAlgorithmProvider(
-        &alg.handle,
+        &h_alg,
         BCRYPT_SHA256_ALGORITHM,
         nullptr,
         0
     );
 
-    if (!BCRYPT_SUCCESS(status) || !alg.handle) {
+    if (!BCRYPT_SUCCESS(status) || !h_alg) {
+        SetLastCryptoStatus(static_cast<uint32_t>(status));
         return "";
     }
+    alg.handle = h_alg;
 
     // Запрос требуемого размера hash object для полной совместимости с Windows 7 / POSReady 7
     DWORD hash_obj_size = 0;
@@ -75,15 +101,17 @@ std::string ComputeSha256(const void* data, size_t size) {
     );
 
     if (!BCRYPT_SUCCESS(status) || hash_obj_size == 0) {
+        SetLastCryptoStatus(static_cast<uint32_t>(status));
         return "";
     }
 
     std::vector<uint8_t> hash_object(hash_obj_size, 0);
 
     ScopedBcryptHash hash;
+    BCRYPT_HASH_HANDLE h_hash = nullptr;
     status = ::BCryptCreateHash(
         alg.handle,
-        &hash.handle,
+        &h_hash,
         hash_object.data(),
         static_cast<ULONG>(hash_object.size()),
         nullptr,
@@ -91,9 +119,11 @@ std::string ComputeSha256(const void* data, size_t size) {
         0
     );
 
-    if (!BCRYPT_SUCCESS(status) || !hash.handle) {
+    if (!BCRYPT_SUCCESS(status) || !h_hash) {
+        SetLastCryptoStatus(static_cast<uint32_t>(status));
         return "";
     }
+    hash.handle = h_hash;
 
     // Хеширование данных порциями (защита от переполнения ULONG при очень больших размерах)
     if (size > 0 && data != nullptr) {
@@ -111,12 +141,16 @@ std::string ComputeSha256(const void* data, size_t size) {
             );
 
             if (!BCRYPT_SUCCESS(status)) {
+                SetLastCryptoStatus(static_cast<uint32_t>(status));
                 return "";
             }
 
             byte_ptr += to_hash;
             remaining -= to_hash;
         }
+    } else if (size > 0 && data == nullptr) {
+        SetLastCryptoStatus(0xC000000D); // STATUS_INVALID_PARAMETER
+        return "";
     }
 
     uint8_t hash_bytes[32] = {0};
@@ -128,15 +162,12 @@ std::string ComputeSha256(const void* data, size_t size) {
     );
 
     if (!BCRYPT_SUCCESS(status)) {
+        SetLastCryptoStatus(static_cast<uint32_t>(status));
         return "";
     }
 
-    char hex_str[65];
-    for (int i = 0; i < 32; ++i) {
-        snprintf(hex_str + (i * 2), 3, "%02x", hash_bytes[i]);
-    }
-    hex_str[64] = '\0';
-    return std::string(hex_str, 64);
+    SetLastCryptoStatus(0); // STATUS_SUCCESS
+    return BytesToHex64(hash_bytes);
 }
 
 std::string ComputeSha256(const std::string& data) {
@@ -296,7 +327,22 @@ void Sha256Final(Sha256Context* ctx, uint8_t digest[32]) {
     }
 }
 
+static const char kHexDigits[] = "0123456789abcdef";
+
+inline std::string BytesToHex64(const uint8_t bytes[32]) {
+    std::string hex(64, '0');
+    for (size_t i = 0; i < 32; ++i) {
+        hex[i * 2]     = kHexDigits[(bytes[i] >> 4) & 0x0F];
+        hex[i * 2 + 1] = kHexDigits[bytes[i] & 0x0F];
+    }
+    return hex;
+}
+
 } // anonymous namespace
+
+uint32_t GetLastCryptoStatus() {
+    return 0; // POSIX fallback всегда успешен (код 0)
+}
 
 std::string ComputeSha256(const void* data, size_t size) {
     Sha256Context ctx;
@@ -308,12 +354,7 @@ std::string ComputeSha256(const void* data, size_t size) {
     uint8_t digest[32];
     Sha256Final(&ctx, digest);
 
-    char hex_str[65];
-    for (int i = 0; i < 32; ++i) {
-        snprintf(hex_str + (i * 2), 3, "%02x", digest[i]);
-    }
-    hex_str[64] = '\0';
-    return std::string(hex_str, 64);
+    return BytesToHex64(digest);
 }
 
 std::string ComputeSha256(const std::string& data) {

@@ -334,6 +334,21 @@
   - `node scripts/test-telemetry.mjs` — PASS (4 из 4 тестов).
   - `compile_applet` & `lint_applet` — PASS (0 ошибок).
 
+#### HOTFIX 4.3.0.3 — Diagnose SHA-256 Failure and Windows Test Crash (0xc0000409)
+- **Статус: Исправлено в исходниках (`IMPLEMENTED IN SOURCE / NOT VERIFIED ON WINDOWS`).**
+- **1. Диагностика и исправление расхождения эталона NIST SHA-256:**
+  - В тесте `TestCryptoSha256` (вектор 3.3) в строке 282 ожидаемое значение ошибочно сравнивалось с искаженной строкой `d7a8fbb307d7809469ca9ab400f20f5f99feed17ea2a2dce88a371e63ab1dc1f`.
+  - Эталонный SHA-256 для 43-байтной ASCII-строки `"The quick brown fox jumps over the lazy dog"` (FIPS 180-4 / NIST): `d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592`.
+  - Реализован диагностический верификатор `VerifySha256Vector` с выводом имени теста, входных данных, длины, ожидаемого и фактического хеша, а также статуса BCrypt API (`0x00000000`).
+- **2. Устранение причин аварийного завершения `0xc0000409` (STATUS_STACK_BUFFER_OVERRUN / __fastfail):**
+  - В `crypto_hash.cpp` 32-кратный стековый вызов `snprintf` заменен на прямой табличный маппинг `kHexDigits` в `std::string(64, '0')`, исключающий переполнение стека и срабатывание проверки `/GS`.
+  - Дескрипторы BCrypt `h_alg` и `h_hash` сохраняются в RAII-обертки только при `BCRYPT_SUCCESS`. Время жизни `hash_object` гарантированно превышает время жизни дескриптора хеша.
+  - Добавлена функция `GetLastCryptoStatus()`.
+  - Захардкоженные пути `/tmp/...` заменены на `GetTestTempPath(...)` через `std::filesystem::temp_directory_path()`.
+  - Вызовы `fs::directory_iterator` и `fs::last_write_time` снабжены `std::error_code`, исключая `std::filesystem_error`.
+  - Макрос `RUN_TEST` защищен блоком `try / catch` и снабжен `std::flush`.
+
+
 #### Phase 4.4 — AnyDesk/RuDesktop ID discovery and configuration security
 - Реализация безопасного модуля чтения идентификаторов удаленного доступа внутри службы Windows (контекст `SYSTEM`):
   - Парсинг `%ProgramData%\AnyDesk\system.conf` (`ad.anydesk.id`) и `%ProgramData%\RuDesktop\rudesktop.cfg`.
