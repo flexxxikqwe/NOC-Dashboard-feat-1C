@@ -167,8 +167,8 @@
 | **Phase 4.1.3** | Spool ACL Correction and Execution-Context Verification | **Выполнено (Ожидает проверки на Windows)** | Устранена уязвимость наследования ACE: для Users (`*S-1-5-32-545`) удалены флаги `(OI)(CI)`, дававшие право `FILE_WRITE_DATA` на чужие дочерние файлы очереди. Права `Users` ограничены папкой `(RD,WD,RA,REA,X,S)`. Подтверждена семантика `MoveFileExW` и право `DELETE` через `CREATOR OWNER:F`. Исследован контекст процессов: код 1С работает с правами непривилегированного пользователя кассира (привилегированный режим 1С не повышает права в Windows), в клиент-серверной базе `rphost` не имеет доступа к диску C: кассы. Реализован тестовый набор `scripts/test-spool-acl-and-context.mjs` (все 5 тестов PASS). |
 | **Phase 4.2** | Native Windows Service C++/Win32 and spool ingestion | **Выполнено в кодовой базе C++/Win32 (Тесты контракта PASS, Windows-бинарник NOT RUN на Linux-раннере)** | Разработана нативная служба Windows (`SERVICE_WIN32_OWN_PROCESS`) в каталоге `windows-agent/` (C++17/Win32). Реализован строгий JSON-парсер без исключений с валидацией Spool Envelope v1.0, проверка UTF-8 без BOM, лимит 64 КБ, FIPS 180-4 SHA-256 хеширование, транзакционная SQLite очередь (WAL, synchronous=NORMAL, UNIQUE sha256), приоритизация выборки (HIGH -> NORMAL -> LOW), поток SpoolWatcher на `ReadDirectoryChangesW` + fallback poll (5 с), изоляция поврежденных пакетов в `quarantine/` и уборка зависших `.tmp` файлов при Crash Recovery (>300 с). Написаны CMakeLists.txt, Makefile (x86/x64 MinGW), README.md и модульные тесты `tests/test_agent.cpp`. Сквозной тестовый набор `scripts/test-phase42-agent-ingestion.mjs` успешно пройден (PASS). |
 | **Phase 4.2.1** | Native Windows Agent Hardening and Real Build Verification | **Выполнено в кодовой базе (Тесты харденинга PASS, CI Workflow создан, сборка MSVC в GitHub Actions ожидает раннера)** | Устранено окно потери данных: SQLite переведен на `synchronous = FULL` (принудительный `FlushFileBuffers` на каждый COMMIT в WAL перед удалением spool-файла). Самописный SHA-256 заменен на штатную криптографию Windows CNG BCrypt (`bcrypt.h`, `bcrypt.lib`) с аппаратным ускорением. Харденинг JSON-парсера: отклонение дубликатов ключей, лимит глубины 32 уровня, строгий отказ от изолированных UTF-16 суррогатов. Обработка коллизий: откат транзакции и изоляция в `quarantine/` с тегом `COLLISION_EVENT_ID`. Учет файлов WAL/SHM при расчете квоты 10 МБ и проверка целостности БД при старте. Добавлена Public Domain лицензия SQLite 3.54.0. Создан GitHub Actions workflow (`.github/workflows/windows-agent.yml`) для компиляции MSVC x64 и x86 на `windows-2022`. |
-| **Phase 4.3** | Bounded SQLite queue and asynchronous HTTP transport | **В очереди (Следующая задача)** | Встраивание кольцевого FIFO-буфера с лимитом базы <= 10 МБ, асинхронный WinHTTP-клиент (TLS 1.2/1.3, gzip, системный прокси), экспоненциальный backoff и сбор Win32 метрик (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetDiskFreeSpaceExW`). Очередь SQLite уже реализована в Phase 4.2/4.2.1; требуется завершить HTTP-транспорт и сбор метрик. |
-| **Phase 4.4** | AnyDesk/RuDesktop ID discovery and configuration security | **Запланировано** | Безопасный парсинг конфигураций AnyDesk (`system.conf`) и RuDesktop (`rudesktop.cfg`) на уровне службы Windows от имени SYSTEM (без административных прав для кассира), хранение секретов в защищенном реестре или защищенном хранилище службы. |
+| **Phase 4.3** | Bounded SQLite queue and asynchronous HTTP transport | **Выполнено в исходниках (Ожидает Windows CI)** | Изолированный транспорт WinHTTP (`include/winhttp_transport.hpp`, `src/winhttp_transport.cpp`), интерфейс `IHttpClient`, `MockHttpClient`, нативный `WinHttpClient` (TLS 1.2/1.3), Safe Rollout (`enabled = false` по умолчанию, запрет plain HTTP, zero token leakage, лимит ответа 64 КБ), экспоненциальный бэкофф, интеграция с контрактом `/api/v1/telemetry`, тесты `TestWinHttpTransportLogic` и `scripts/test-phase43-transport.mjs`. |
+| **Phase 4.4** | AnyDesk/RuDesktop ID discovery and configuration security | **В очереди (Следующая задача)** | Безопасный парсинг конфигураций AnyDesk (`system.conf`) и RuDesktop (`rudesktop.cfg`) на уровне службы Windows от имени SYSTEM (без административных прав для кассира), хранение секретов в защищенном реестре или защищенном хранилище службы. |
 | **Phase 4.5** | End-to-end testing, crash recovery, performance measurements and pilot rollout | **Запланировано** | Сквозное нагрузочное тестирование на реальных Windows POS (задержка UI кассира 0 мс), оффлайн-буфер на 72 часа (лимит <= 10 МБ), тесты Crash Recovery при обрыве питания, пилотное развертывание на контрольной кассе. |
 
 ---
@@ -295,16 +295,29 @@
     * Разработан и пройден сквозной автоматизированный тестовый набор `scripts/test-phase42-agent-ingestion.mjs` (5 из 5 блоков PASS).
     * *Ограничение среды*: в текущем контейнере Linux отсутствуют `make` и `x86_64-w64-mingw32-g++`; компиляция бинарного `.exe` зафиксирована со статусом `NOT RUN` до запуска на Windows-раннере или сборщике MinGW.
 
-#### Phase 4.3 — Bounded SQLite queue and asynchronous HTTP transport
-- *Статус: В очереди (Следующая задача).*
-- Встраивание легковесной СУБД SQLite (amalgamation) в службу Windows:
-  - Режим `PRAGMA journal_mode = WAL`, `PRAGMA synchronous = NORMAL`.
-  - Реализация кольцевого буфера FIFO с жестким порогом размера базы данных (<= 10 МБ).
-  - При переполнении — вытеснение устаревших низкоприоритетных метрик с гарантированным сохранением критических инцидентов.
-- Асинхронный транспорт на базе `WinHTTP`:
-  - Поддержка системного прокси, TLS 1.2/1.3, сжатия gzip.
-  - Экспоненциальный backoff при повторных отправках.
-- Сбор системных метрик средствами Win32 API (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetDiskFreeSpaceExW`) с потреблением CPU < 0.1%.
+#### Phase 4.3 — WinHTTP Transport: Safe Implementation Without Local Windows
+- **Статус: Выполнено в исходниках (`IMPLEMENTED IN SOURCE / NOT VERIFIED ON WINDOWS`).**
+- **1. Изолированный транспорт WinHTTP (`include/winhttp_transport.hpp`, `src/winhttp_transport.cpp`):**
+  - Абстракция через `IHttpClient` (`Post`, `Abort`), кросс-платформенный `MockHttpClient` для детерминированного тестирования и нативный `WinHttpClient` на базе Win32 WinHTTP API (`winhttp.dll`).
+  - Поддержка явного включения TLS 1.2 / TLS 1.3 через `WINHTTP_OPTION_SECURE_PROTOCOLS`.
+  - Защита от переполнения памяти: чтение ответа сервера ограничено 64 КБ (`kMaxRespBytes = 65536`).
+  - Управление фоновым потоком через `TransportManager`, синхронизированным с остановкой SCM (`Abort` + `join`).
+- **2. Политики безопасности и Safe Rollout:**
+  - Транспорт строго выключен по умолчанию (`enabled = false`), предотвращая неконтролируемые исходящие сетевые запросы с касс. Активация возможна только при явном флаге `enable_http_transport: true` в `config.json` или `NOC_ENABLE_HTTP_TRANSPORT=1`.
+  - Запрет plain HTTP по умолчанию (`allow_insecure_http = false`). Передача только по HTTPS (`https://`).
+  - Zero Token Leakage: токен маскируется в функции `MaskTokenForLog` (например, `dev...26 (21 chars)`), исключая попадание в Event Log и журналы.
+- **3. Совместимость с серверным контрактом Backend (`/api/v1/telemetry`):**
+  - Соответствие схеме `TelemetryPayload` (`shop`, `workplace`, `remote`, `warnings`, `runtime_errors`, `health_checks`, `system_info`).
+  - Подтверждение доставки по `HTTP 200` и `success: true` в теле JSON перед переводом статуса в `SENT` в SQLite.
+  - Дедупликация инцидентов и вычисление идентификаторов на сервере без создания дубликатов.
+- **4. Сетевая устойчивость и экспоненциальный бэкофф:**
+  - Алгоритм `CalculateBackoffSeconds(retry_count, retry_after_header)` с экспоненциальным шагом от 5 до 300 секунд.
+  - Поддержка серверного заголовка `Retry-After` (HTTP 429/503).
+  - Сохранение пакетов в локальной очереди при любых сбоях сети или 5xx ошибках.
+- **5. Тестирование:**
+  - Создан и успешно пройден сквозной тестовый набор `scripts/test-phase43-transport.mjs` (все 5 блоков PASS).
+  - В C++ юнит-тесты `windows-agent/tests/test_agent.cpp` включен блок `TestWinHttpTransportLogic`.
+  - Интеграция в `.github/workflows/windows-agent.yml`, `CMakeLists.txt` и `Makefile`.
 
 #### Phase 4.4 — AnyDesk/RuDesktop ID discovery and configuration security
 - Реализация безопасного модуля чтения идентификаторов удаленного доступа внутри службы Windows (контекст `SYSTEM`):

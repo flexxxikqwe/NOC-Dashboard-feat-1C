@@ -25,6 +25,7 @@ set(AGENT_CORE_SOURCES
     src/sqlite_queue.cpp
     src/spool_watcher.cpp
     src/service_core.cpp
+    src/winhttp_transport.cpp
 )
 
 # Исполняемый файл службы Windows
@@ -35,7 +36,7 @@ add_executable(noc-agent
 )
 
 if (WIN32 OR MINGW)
-    target_link_libraries(noc-agent PRIVATE advapi32 ws2_32 bcrypt)
+    target_link_libraries(noc-agent PRIVATE advapi32 ws2_32 bcrypt winhttp)
     if (MINGW)
         set_target_properties(noc-agent PROPERTIES
             LINK_FLAGS "-static -static-libgcc -static-libstdc++"
@@ -51,7 +52,7 @@ add_executable(noc_agent_tests
 )
 
 if (WIN32 OR MINGW)
-    target_link_libraries(noc_agent_tests PRIVATE advapi32 ws2_32 bcrypt)
+    target_link_libraries(noc_agent_tests PRIVATE advapi32 ws2_32 bcrypt winhttp)
 else()
     target_link_libraries(noc_agent_tests PRIVATE pthread dl)
 endif()

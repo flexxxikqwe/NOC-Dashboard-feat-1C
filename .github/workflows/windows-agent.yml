@@ -68,7 +68,7 @@ jobs:
             & $agentExe --version
           }
 
-      - name: Upload Build Artifacts
+      - name: Upload Build Artifacts and Diagnostic Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -77,5 +77,6 @@ jobs:
             ${{ matrix.build_dir }}/Release/noc-agent.exe
             ${{ matrix.build_dir }}/Release/noc-agent.pdb
             ${{ matrix.build_dir }}/Release/noc_agent_tests.exe
-            ${{ matrix.build_dir }}/Testing/Temporary/LastTest.log
+            ${{ matrix.build_dir }}/Testing/Temporary/*.log
+            ${{ matrix.build_dir }}/CMakeFiles/*.log
           if-no-files-found: warn

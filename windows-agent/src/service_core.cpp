@@ -1,6 +1,7 @@
 #include "service_core.hpp"
 #include "sqlite_queue.hpp"
 #include "spool_watcher.hpp"
+#include "winhttp_transport.hpp"
 #include <csignal>
 #include <cstdlib>
 
@@ -101,9 +102,21 @@ int ServiceCore::RunOnce() {
     size_t swept = watcher.SweepStaleTmpFiles();
     Log(LogLevel::INFO_LVL, "Stale .tmp files swept: " + std::to_string(swept));
 
-    // Проход по очереди
+    // Проход по очереди spool
     size_t processed = watcher.ProcessOnce(err);
     Log(LogLevel::INFO_LVL, "Spool files processed: " + std::to_string(processed));
+
+    // Проход по очереди транспорта (если включен в конфигурации)
+    noc::transport::TransportManager transport(queue);
+    std::string cfg_err;
+    const char* env_cfg = std::getenv(ENV_CONFIG_PATH);
+    std::string cfg_path = env_cfg ? env_cfg : DEFAULT_CONFIG_PATH;
+    transport.LoadConfig(cfg_path, cfg_err);
+    if (transport.GetConfig().enabled) {
+        std::string trans_err;
+        size_t sent = transport.ProcessPendingBatch(trans_err);
+        Log(LogLevel::INFO_LVL, "Transport batch processed: " + std::to_string(sent) + " sent");
+    }
 
     size_t count = 0;
     int64_t bytes = 0;
@@ -123,10 +136,12 @@ int ServiceCore::RunConsole() {
     const char* env_spool = std::getenv(ENV_SPOOL_DIR);
     const char* env_quar = std::getenv(ENV_QUARANTINE_DIR);
     const char* env_db = std::getenv(ENV_DB_PATH);
+    const char* env_cfg = std::getenv(ENV_CONFIG_PATH);
 
     std::string spool_dir = env_spool ? env_spool : DEFAULT_SPOOL_DIR;
     std::string quar_dir = env_quar ? env_quar : DEFAULT_QUARANTINE_DIR;
     std::string db_path = env_db ? env_db : DEFAULT_DB_PATH;
+    std::string cfg_path = env_cfg ? env_cfg : DEFAULT_CONFIG_PATH;
 
     db::SqliteQueue queue;
     std::string err;
@@ -141,14 +156,21 @@ int ServiceCore::RunConsole() {
         return 1;
     }
 
+    noc::transport::TransportManager transport(queue);
+    std::string cfg_err;
+    transport.LoadConfig(cfg_path, cfg_err);
+
     watcher.Start();
+    transport.Start(); // Безопасно: запустит рабочий поток только если config.enabled == true
+
     Log(LogLevel::INFO_LVL, "Agent is active. Press Ctrl+C to terminate.");
 
     while (!g_console_stop.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    Log(LogLevel::INFO_LVL, "Stopping SpoolWatcher...");
+    Log(LogLevel::INFO_LVL, "Stopping TransportManager and SpoolWatcher...");
+    transport.Stop();
     watcher.Stop();
     queue.Close();
     Log(LogLevel::INFO_LVL, "Agent terminated cleanly.");
@@ -214,13 +236,19 @@ void WINAPI ServiceCore::ServiceMain(DWORD argc, LPWSTR* argv) {
         return;
     }
 
+    noc::transport::TransportManager transport(queue);
+    std::string cfg_err;
+    transport.LoadConfig(DEFAULT_CONFIG_PATH, cfg_err);
+
     watcher.Start();
+    transport.Start(); // Безопасно: запустит рабочий поток только если config.enabled == true
     self.SetStatus(SERVICE_RUNNING);
 
     // Ожидание сигнала остановки службы
     WaitForSingleObject(self.stop_event_, INFINITE);
 
     self.SetStatus(SERVICE_STOP_PENDING, NO_ERROR, 5000);
+    transport.Stop();
     watcher.Stop();
     queue.Close();
     CloseHandle(self.stop_event_);

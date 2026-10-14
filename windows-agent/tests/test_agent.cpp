@@ -11,6 +11,7 @@
 #include "crypto_hash.hpp"
 #include "sqlite_queue.hpp"
 #include "spool_watcher.hpp"
+#include "winhttp_transport.hpp"
 #include "../vendor/sqlite/sqlite3.h"
 
 namespace fs = std::filesystem;
@@ -119,6 +120,30 @@ void TestJsonParserHardening() {
     // 1.10 Нетерминированная строка
     std::string unterminated = "{\"str\": \"unfinished";
     TEST_ASSERT(!json::Parser::Parse(unterminated, bad_val, err), "Unterminated string must be rejected");
+
+    // 1.11 Недопустимые escape-последовательности
+    std::string bad_esc1 = "{\"str\": \"bad \\q escape\"}";
+    TEST_ASSERT(!json::Parser::Parse(bad_esc1, bad_val, err), "Invalid escape \\q must be rejected");
+
+    std::string bad_esc2 = "{\"str\": \"bad \\x41 escape\"}";
+    TEST_ASSERT(!json::Parser::Parse(bad_esc2, bad_val, err), "Non-JSON escape \\x must be rejected");
+
+    // 1.12 Некорректные форматы чисел
+    std::string bad_num1 = "{\"n\": 1.}";
+    TEST_ASSERT(!json::Parser::Parse(bad_num1, bad_val, err), "Trailing dot in number must be rejected");
+
+    std::string bad_num2 = "{\"n\": 1e}";
+    TEST_ASSERT(!json::Parser::Parse(bad_num2, bad_val, err), "Exponent without digits must be rejected");
+
+    std::string bad_num3 = "{\"n\": 1.2.3}";
+    TEST_ASSERT(!json::Parser::Parse(bad_num3, bad_val, err), "Multiple decimal points must be rejected");
+
+    std::string bad_num4 = "{\"n\": --5}";
+    TEST_ASSERT(!json::Parser::Parse(bad_num4, bad_val, err), "Multiple signs in number must be rejected");
+
+    // 1.13 Пустой ввод
+    std::string empty_input = "";
+    TEST_ASSERT(!json::Parser::Parse(empty_input, bad_val, err), "Empty JSON input must be rejected");
 }
 
 // ============================================================================
@@ -477,6 +502,59 @@ void TestSpoolWatcherAndQuarantine() {
     }
     TEST_ASSERT(found_corrupt_quar, "Corrupt file must be moved to quarantine with INVALID_ENVELOPE");
 
+    // 5.5 Файл превышающий лимит 64 КБ (> 65536 байт) -> изоляция с тегом OVERSIZED_64KB
+    std::string oversized_file = test_spool + "/20261012143000998_c3d4e5f6-a7b8-9c0d-1e2f-3a4b5c6d7e8f.json";
+    {
+        std::ofstream ofs(oversized_file);
+        std::string huge(70000, 'X');
+        ofs << "{\"huge\":\"" << huge << "\"}";
+    }
+
+    watcher.ProcessOnce(err);
+    TEST_ASSERT(!fs::exists(oversized_file), "Oversized file must be removed from spool");
+
+    bool found_oversized_quar = false;
+    for (const auto& entry : fs::directory_iterator(test_quar)) {
+        if (entry.path().filename().string().find("OVERSIZED_64KB") != std::string::npos) {
+            found_oversized_quar = true;
+            break;
+        }
+    }
+    TEST_ASSERT(found_oversized_quar, "Oversized file must be moved to quarantine with OVERSIZED_64KB");
+
+    // 5.6 Файл нулевого размера (in-flight запись 1С) -> пропускается без удаления и без карантина
+    std::string empty_file = test_spool + "/20261012143000997_d4e5f6a7-b89c-0d1e-2f3a-4b5c6d7e8f90.json";
+    {
+        std::ofstream ofs(empty_file);
+    }
+    TEST_ASSERT(fs::exists(empty_file) && fs::file_size(empty_file) == 0, "Empty file created");
+
+    watcher.ProcessOnce(err);
+    TEST_ASSERT(fs::exists(empty_file), "In-flight zero-byte file must remain in spool without deletion");
+    fs::remove(empty_file, ec);
+
+    // 5.7 Повторное чтение идентичного события -> удаление дубликата из spool без ошибки
+    std::string dup_file = test_spool + "/20261012143000124_a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d.json";
+    {
+        std::ofstream ofs(dup_file);
+        ofs << R"({
+          "schema_version": "1.0",
+          "event_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+          "timestamp_utc": "2026-10-12T14:30:00.123Z",
+          "source": "1C_EXTENSION",
+          "event_type": "TELEMETRY",
+          "priority": "NORMAL",
+          "payload": {
+            "shop": "Магазин Розница",
+            "workplace": "Касса 1"
+          }
+        })";
+    }
+
+    size_t dup_processed = watcher.ProcessOnce(err);
+    TEST_ASSERT(dup_processed == 1, "Duplicate processed successfully");
+    TEST_ASSERT(!fs::exists(dup_file), "Duplicate file must be cleaned from spool");
+
     queue.Close();
     fs::remove_all(test_spool, ec);
     fs::remove_all(test_quar, ec);
@@ -485,9 +563,228 @@ void TestSpoolWatcherAndQuarantine() {
     fs::remove(test_db + "-shm", ec);
 }
 
+// ============================================================================
+// ТЕСТ 6: WinHTTP Транспорт (бизнес-логика, MockHttpClient, бэкофф, безопасность)
+// ============================================================================
+void TestWinHttpTransportLogic() {
+    // 6.1 Маскирование токена в логах (Zero Token Leakage)
+    std::string secret = "dev-secret-token-2026";
+    std::string masked = transport::MaskTokenForLog(secret);
+    TEST_ASSERT(masked.find("dev") != std::string::npos, "Masked token starts with prefix");
+    TEST_ASSERT(masked.find("secret") == std::string::npos, "Masked token NEVER contains secret middle part");
+    TEST_ASSERT(masked == "dev...26 (21 chars)", "Masked token format matches specification: " + masked);
+    TEST_ASSERT(transport::MaskTokenForLog("") == "(empty)", "Empty token handled safely");
+    TEST_ASSERT(transport::MaskTokenForLog("short") == "***", "Short token masked with asterisks");
+
+    // 6.2 Парсинг HTTP/HTTPS URL
+    bool is_https = false;
+    std::string host, path, url_err;
+    uint16_t port = 0;
+
+    TEST_ASSERT(transport::ParseHttpUrl("https://noc.company.local:3000/api/v1/telemetry", is_https, host, port, path, url_err), "HTTPS URL parse ok");
+    TEST_ASSERT(is_https == true, "Scheme must be https");
+    TEST_ASSERT(host == "noc.company.local", "Host must match");
+    TEST_ASSERT(port == 3000, "Port must be 3000");
+    TEST_ASSERT(path == "/api/v1/telemetry", "Path must match");
+
+    TEST_ASSERT(transport::ParseHttpUrl("https://noc.company.local", is_https, host, port, path, url_err), "Default port parse ok");
+    TEST_ASSERT(port == 443, "Default HTTPS port must be 443");
+    TEST_ASSERT(path == "/", "Default path must be /");
+
+    TEST_ASSERT(!transport::ParseHttpUrl("ftp://invalid.scheme", is_https, host, port, path, url_err), "Invalid scheme must be rejected");
+
+    // 6.3 Расчет экспоненциального бэкоффа
+    TEST_ASSERT(transport::TransportManager::CalculateBackoffSeconds(0) == 5, "Retry 0 backoff = 5s");
+    TEST_ASSERT(transport::TransportManager::CalculateBackoffSeconds(1) == 10, "Retry 1 backoff = 10s");
+    TEST_ASSERT(transport::TransportManager::CalculateBackoffSeconds(2) == 20, "Retry 2 backoff = 20s");
+    TEST_ASSERT(transport::TransportManager::CalculateBackoffSeconds(3) == 40, "Retry 3 backoff = 40s");
+    TEST_ASSERT(transport::TransportManager::CalculateBackoffSeconds(4) == 80, "Retry 4 backoff = 80s");
+    TEST_ASSERT(transport::TransportManager::CalculateBackoffSeconds(5) == 160, "Retry 5 backoff = 160s");
+    TEST_ASSERT(transport::TransportManager::CalculateBackoffSeconds(6) == 300, "Retry 6 backoff clamped to 300s");
+    TEST_ASSERT(transport::TransportManager::CalculateBackoffSeconds(10) == 300, "Retry 10 backoff ceiling = 300s");
+    TEST_ASSERT(transport::TransportManager::CalculateBackoffSeconds(0, 45) == 45, "Retry-After header 45s takes precedence");
+
+    // 6.4 Трансформация SpoolEnvelope в Ingestion Payload
+    SpoolEnvelope env;
+    env.shop = "Магазин Розница 1";
+    env.workplace = "Касса 2";
+    env.warnings = {"Внимание: смена > 24ч"};
+    env.runtime_errors_raw_json = "[{\"time\":\"2026-10-12T14:00:00Z\",\"event\":\"1C_Err\",\"error_text\":\"ККТ timeout\"}]";
+    env.health_checks_raw_json = "[{\"id\":\"ofd_queue\",\"status\":\"WARN\",\"details\":\"Буфер ОФД 15 чеков\"}]";
+    env.one_c_info.platform_version = "8.3.24.1540";
+    env.one_c_info.configuration_name = "Розница 2.3";
+    env.one_c_info.computer_name = "POS-01";
+    env.event_id = "test-guid-1234";
+    env.event_type = "INCIDENT";
+    env.priority = "HIGH";
+    env.timestamp_utc = "2026-10-12T14:30:00Z";
+
+    std::string ingest_json = transport::EnvelopeToIngestionPayload(env, "NONE", "");
+    json::Value parsed_ingest;
+    std::string perr;
+    TEST_ASSERT(json::Parser::Parse(ingest_json, parsed_ingest, perr), "Ingest payload must be valid JSON: " + perr);
+    TEST_ASSERT(parsed_ingest.IsObject(), "Root must be object");
+    TEST_ASSERT(parsed_ingest["shop"].AsString() == "Магазин Розница 1", "shop field matches");
+    TEST_ASSERT(parsed_ingest["workplace"].AsString() == "Касса 2", "workplace field matches");
+    TEST_ASSERT(parsed_ingest["remote"]["type"].AsString() == "NONE", "remote.type matches");
+    TEST_ASSERT(parsed_ingest["warnings"].AsArray().size() == 1, "warnings size matches");
+    TEST_ASSERT(parsed_ingest["runtime_errors"].AsArray().size() == 1, "runtime_errors size matches");
+    TEST_ASSERT(parsed_ingest["health_checks"].AsArray().size() == 1, "health_checks size matches");
+    TEST_ASSERT(parsed_ingest["system_info"]["one_c"]["platform_version"].AsString() == "8.3.24.1540", "one_c matches");
+
+    // 6.5 Сквозной цикл отправки через MockHttpClient и SqliteQueue
+    std::string test_db = "/tmp/test_noc_transport_queue.db";
+    std::error_code ec;
+    fs::remove(test_db, ec);
+    fs::remove(test_db + "-wal", ec);
+    fs::remove(test_db + "-shm", ec);
+
+    db::SqliteQueue queue;
+    std::string q_err;
+    TEST_ASSERT(queue.Open(test_db, q_err), "DB opens for transport tests");
+
+    // Добавляем тестовое событие в очередь
+    env.raw_json = R"({
+      "schema_version": "1.0",
+      "event_id": "33333333-3333-3333-3333-333333333333",
+      "timestamp_utc": "2026-10-12T15:00:00Z",
+      "source": "1C_EXTENSION",
+      "event_type": "TELEMETRY",
+      "priority": "HIGH",
+      "payload": {
+        "shop": "Магазин Розница 1",
+        "workplace": "Касса 2"
+      }
+    })";
+    env.sha256_hash = crypto::ComputeSha256(env.raw_json);
+    env.event_id = "33333333-3333-3333-3333-333333333333";
+
+    auto enq_res = queue.Enqueue(env);
+    TEST_ASSERT(enq_res.status == db::EnqueueStatus::SUCCESS_INSERTED, "Test event enqueued");
+
+    // Создаем MockHttpClient
+    auto mock_client = std::make_shared<transport::MockHttpClient>();
+    transport::TransportManager manager(queue, mock_client);
+
+    transport::TransportConfig cfg;
+    cfg.server_url = "https://noc.company.local:3000";
+    cfg.token = "dev-secret-token-2026";
+    cfg.enabled = false; // По умолчанию выключен!
+    manager.SetConfig(cfg);
+
+    // Проверка 6.5.1: Выключенный по умолчанию транспорт не делает запросов
+    std::string batch_err;
+    size_t sent = manager.ProcessPendingBatch(batch_err);
+    TEST_ASSERT(sent == 0, "Disabled transport sends 0 events");
+    TEST_ASSERT(mock_client->GetCallCount() == 0, "Disabled transport makes 0 network calls");
+
+    // Проверка 6.5.2: Запрет plain HTTP (HTTPS required)
+    cfg.enabled = true;
+    cfg.server_url = "http://unencrypted.server.com"; // HTTP без разрешения
+    cfg.allow_insecure_http = false;
+    manager.SetConfig(cfg);
+    sent = manager.ProcessPendingBatch(batch_err);
+    TEST_ASSERT(sent == 0, "Insecure HTTP must be rejected");
+    TEST_ASSERT(mock_client->GetCallCount() == 0, "Insecure HTTP makes 0 network calls");
+    TEST_ASSERT(batch_err.find("HTTPS required") != std::string::npos, "Error mentions HTTPS required");
+
+    // Проверка 6.5.3: Успешная доставка по HTTPS (HTTP 200, success: true)
+    cfg.server_url = "https://noc.company.local:3000";
+    manager.SetConfig(cfg);
+
+    mock_client->SetHandler([](const std::string& url, const std::string& token, const std::string& payload) {
+        TEST_ASSERT(url == "https://noc.company.local:3000/api/v1/telemetry", "Target URL matches Ingestion API");
+        TEST_ASSERT(token == "dev-secret-token-2026", "Bearer token passed to client");
+        TEST_ASSERT(payload.find("Магазин Розница 1") != std::string::npos, "Payload contains shop name");
+        transport::HttpResponse resp;
+        resp.status_code = 200;
+        resp.body = "{\"success\":true,\"workplace_id\":\"wp_123\",\"incidents_recorded\":1}";
+        return resp;
+    });
+
+    sent = manager.ProcessPendingBatch(batch_err);
+    TEST_ASSERT(sent == 1, "Successfully sent 1 event");
+    TEST_ASSERT(mock_client->GetCallCount() == 1, "Mock client called once");
+
+    // Проверяем, что статус записи в БД обновился на 'SENT'
+    std::vector<QueueRecord> pending;
+    queue.GetPending(10, pending, q_err);
+    TEST_ASSERT(pending.empty(), "Pending queue is now empty (record marked as SENT)");
+
+    // Проверка 6.5.4: Обработка HTTP 401 (Auth Failure) -> статус остается PENDING, токен не логируется
+    // Добавляем второе событие
+    env.event_id = "44444444-4444-4444-4444-444444444444";
+    env.raw_json = "{\"schema_version\":\"1.0\",\"event_id\":\"44444444-4444-4444-4444-444444444444\",\"timestamp_utc\":\"2026-10-12T15:05:00Z\",\"source\":\"1C_EXTENSION\",\"event_type\":\"TELEMETRY\",\"priority\":\"NORMAL\",\"payload\":{\"shop\":\"S\",\"workplace\":\"W\"}}";
+    env.sha256_hash = crypto::ComputeSha256(env.raw_json);
+    queue.Enqueue(env);
+
+    mock_client->SetHandler([](const std::string&, const std::string&, const std::string&) {
+        transport::HttpResponse r;
+        r.status_code = 401;
+        r.body = "{\"error\":\"Unauthorized. Invalid or missing Bearer token.\"}";
+        return r;
+    });
+
+    sent = manager.ProcessPendingBatch(batch_err);
+    TEST_ASSERT(sent == 0, "No events sent on 401");
+    TEST_ASSERT(manager.IsInBackoff(), "Backoff activated after 401 auth error");
+    queue.GetPending(10, pending, q_err);
+    TEST_ASSERT(pending.size() == 1, "Record remains in queue (PENDING) after 401");
+    TEST_ASSERT(pending[0].retry_count == 1, "Retry count incremented after 401");
+
+    // Проверка 6.5.5: Обработка HTTP 429 (Rate Limit с Retry-After: 45)
+    // Сбрасываем бэкофф вручную для теста
+    cfg.poll_interval_ms = 100;
+    manager.SetConfig(cfg);
+
+    mock_client->SetHandler([](const std::string&, const std::string&, const std::string&) {
+        transport::HttpResponse r;
+        r.status_code = 429;
+        r.retry_after_seconds = 45;
+        r.body = "{\"error\":\"Too Many Requests\"}";
+        return r;
+    });
+
+    // Принудительно вызываем сброс времени бэкоффа для теста
+    // Создаем новый менеджер с тем же клиентом для сброса таймера
+    transport::TransportManager manager_retry(queue, mock_client);
+    manager_retry.SetConfig(cfg);
+    sent = manager_retry.ProcessPendingBatch(batch_err);
+    TEST_ASSERT(sent == 0, "No events sent on 429");
+    TEST_ASSERT(manager_retry.IsInBackoff(), "Backoff activated on 429");
+    TEST_ASSERT(manager_retry.GetRemainingBackoffSeconds() >= 40, "Retry-After 45s respected");
+
+    // Проверка 6.5.6: Сетевой сбой (Network Error / Timeout) -> сохранение в очереди
+    mock_client->SetHandler([](const std::string&, const std::string&, const std::string&) {
+        transport::HttpResponse r;
+        r.status_code = 0;
+        r.network_error = true;
+        r.error_message = "Connection reset by peer / timeout";
+        return r;
+    });
+
+    transport::TransportManager manager_net(queue, mock_client);
+    manager_net.SetConfig(cfg);
+    sent = manager_net.ProcessPendingBatch(batch_err);
+    TEST_ASSERT(sent == 0, "No events sent on network error");
+    queue.GetPending(10, pending, q_err);
+    TEST_ASSERT(pending.size() == 1, "Record strictly preserved in queue on network error");
+
+    // Проверка 6.5.7: Остановка службы во время ожидания (Graceful Stop)
+    manager_net.Start();
+    TEST_ASSERT(manager_net.IsRunning(), "Transport manager running");
+    manager_net.Stop();
+    TEST_ASSERT(!manager_net.IsRunning(), "Transport manager stopped cleanly without deadlock");
+
+    queue.Close();
+    fs::remove(test_db, ec);
+    fs::remove(test_db + "-wal", ec);
+    fs::remove(test_db + "-shm", ec);
+}
+
 int main() {
     std::cout << "================================================================\n";
-    std::cout << "⚡ 1C-NOC WINDOWS AGENT — UNIT TESTS (PHASE 4.2.1 HARDENING)\n";
+    std::cout << "⚡ 1C-NOC WINDOWS AGENT — UNIT TESTS (PHASE 4.2.1 & 4.3 TRANSPORT)\n";
     std::cout << "================================================================\n\n";
 
     RUN_TEST(TestJsonParserHardening);
@@ -495,6 +792,7 @@ int main() {
     RUN_TEST(TestCryptoSha256);
     RUN_TEST(TestSqliteDurabilityAndCollisions);
     RUN_TEST(TestSpoolWatcherAndQuarantine);
+    RUN_TEST(TestWinHttpTransportLogic);
 
     std::cout << "\n================================================================\n";
     std::cout << "RESULTS: " << g_tests_passed << " PASSED, " << g_tests_failed << " FAILED\n";
