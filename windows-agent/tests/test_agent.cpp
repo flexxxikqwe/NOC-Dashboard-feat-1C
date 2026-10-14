@@ -435,7 +435,7 @@ void TestSpoolWatcherAndQuarantine() {
     std::string valid_file = test_spool + "/20261012143000123_a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d.json";
     {
         std::ofstream ofs(valid_file);
-        ofs << R"({
+        ofs << R"json({
           "schema_version": "1.0",
           "event_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
           "timestamp_utc": "2026-10-12T14:30:00.123Z",
@@ -446,7 +446,7 @@ void TestSpoolWatcherAndQuarantine() {
             "shop": "Магазин Розница",
             "workplace": "Касса 1"
           }
-        })";
+        })json";
     }
 
     size_t processed = watcher.ProcessOnce(err);
@@ -457,7 +457,7 @@ void TestSpoolWatcherAndQuarantine() {
     std::string colliding_file = test_spool + "/20261012143000555_a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d.json";
     {
         std::ofstream ofs(colliding_file);
-        ofs << R"({
+        ofs << R"json({
           "schema_version": "1.0",
           "event_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
           "timestamp_utc": "2026-10-12T14:30:00.555Z",
@@ -465,10 +465,10 @@ void TestSpoolWatcherAndQuarantine() {
           "event_type": "TELEMETRY",
           "priority": "NORMAL",
           "payload": {
-            "shop": "Магазин Розница (КОЛЛИЗИЯ)",
+            "shop": "Магазин Розница [КОЛЛИЗИЯ]",
             "workplace": "Касса 1"
           }
-        })";
+        })json";
     }
 
     watcher.ProcessOnce(err);
@@ -537,7 +537,7 @@ void TestSpoolWatcherAndQuarantine() {
     std::string dup_file = test_spool + "/20261012143000124_a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d.json";
     {
         std::ofstream ofs(dup_file);
-        ofs << R"({
+        ofs << R"json({
           "schema_version": "1.0",
           "event_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
           "timestamp_utc": "2026-10-12T14:30:00.123Z",
@@ -548,7 +548,7 @@ void TestSpoolWatcherAndQuarantine() {
             "shop": "Магазин Розница",
             "workplace": "Касса 1"
           }
-        })";
+        })json";
     }
 
     size_t dup_processed = watcher.ProcessOnce(err);
@@ -644,7 +644,7 @@ void TestWinHttpTransportLogic() {
     TEST_ASSERT(queue.Open(test_db, q_err), "DB opens for transport tests");
 
     // Добавляем тестовое событие в очередь
-    env.raw_json = R"({
+    env.raw_json = R"json({
       "schema_version": "1.0",
       "event_id": "33333333-3333-3333-3333-333333333333",
       "timestamp_utc": "2026-10-12T15:00:00Z",
@@ -655,7 +655,7 @@ void TestWinHttpTransportLogic() {
         "shop": "Магазин Розница 1",
         "workplace": "Касса 2"
       }
-    })";
+    })json";
     env.sha256_hash = crypto::ComputeSha256(env.raw_json);
     env.event_id = "33333333-3333-3333-3333-333333333333";
 
