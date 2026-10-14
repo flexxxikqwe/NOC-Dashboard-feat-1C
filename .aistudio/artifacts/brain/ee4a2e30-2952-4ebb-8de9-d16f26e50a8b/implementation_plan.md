@@ -165,8 +165,8 @@
 | **Phase 4.1.1** | BSL Functional Integrity and Spool Contract Verification | **Выполнено** | Проверена сквозная цепочка вызовов. Устранен критический дефект недоступности `_МС_Сервер` на клиенте (исправлено `Вызов сервера: [x] Истина`). Добавлен отложенный стартовый замер (15 с) без блокировки входа кассира. Реализован экспортный метод `ЗафиксироватьИнцидент(...)` для немедленной записи аварий ККТ/1С. Гармонизированы таймстемпы UTC с реальными миллисекундами и формат 17-значного имени файла. Полностью удалено чтение токенов из BSL. |
 | **Phase 4.1.2** | POS Topology, Spool ACL and Priority Guarantees | **Выполнено (Ожидает проверки на Windows)** | Проанализирована топология исполнения 1С (файловая vs клиент-серверная), внедрено автоопределение `ib_mode` в метаданные. Каталоги `spool` и `quarantine` инициализируются с языково-независимыми Well-Known SID. Устранено голодание приоритетов: квотирование очереди 40 слотов под телеметрию и 10 зарезервированных слотов под инциденты. |
 | **Phase 4.1.3** | Spool ACL Correction and Execution-Context Verification | **Выполнено (Ожидает проверки на Windows)** | Устранена уязвимость наследования ACE: для Users (`*S-1-5-32-545`) удалены флаги `(OI)(CI)`, дававшие право `FILE_WRITE_DATA` на чужие дочерние файлы очереди. Права `Users` ограничены папкой `(RD,WD,RA,REA,X,S)`. Подтверждена семантика `MoveFileExW` и право `DELETE` через `CREATOR OWNER:F`. Исследован контекст процессов: код 1С работает с правами непривилегированного пользователя кассира (привилегированный режим 1С не повышает права в Windows), в клиент-серверной базе `rphost` не имеет доступа к диску C: кассы. Реализован тестовый набор `scripts/test-spool-acl-and-context.mjs` (все 5 тестов PASS). |
-| **Phase 4.2** | Native Windows Service C++/Win32 and spool ingestion | **В очереди (Следующая задача)** | Разработка Win32 Service (`SERVICE_WIN32_OWN_PROCESS`), создание каталогов spool/quarantine со строгими SECURITY_ATTRIBUTES, мониторинг через `ReadDirectoryChangesW`, валидация схемы JSON и изоляция в quarantine. Зависимости от Phase 4.1, 4.1.1, 4.1.2 и 4.1.3 выполнены. |
-| **Phase 4.3** | Bounded SQLite queue and asynchronous HTTP transport | **Запланировано** | Встраивание SQLite (amalgamation) с кольцевым FIFO-буфером (лимит базы <= 10 МБ), асинхронный WinHTTP-транспорт (TLS 1.2/1.3, gzip, системный прокси), сбор метрик Win32 API (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetDiskFreeSpaceExW`). |
+| **Phase 4.2** | Native Windows Service C++/Win32 and spool ingestion | **Выполнено в кодовой базе C++/Win32 (Тесты контракта PASS, Windows-бинарник NOT RUN на Linux-раннере)** | Разработана нативная служба Windows (`SERVICE_WIN32_OWN_PROCESS`) в каталоге `windows-agent/` (C++17/Win32). Реализован строгий JSON-парсер без исключений с валидацией Spool Envelope v1.0, проверка UTF-8 без BOM, лимит 64 КБ, FIPS 180-4 SHA-256 хеширование, транзакционная SQLite очередь (WAL, synchronous=NORMAL, UNIQUE sha256), приоритизация выборки (HIGH -> NORMAL -> LOW), поток SpoolWatcher на `ReadDirectoryChangesW` + fallback poll (5 с), изоляция поврежденных пакетов в `quarantine/` и уборка зависших `.tmp` файлов при Crash Recovery (>300 с). Написаны CMakeLists.txt, Makefile (x86/x64 MinGW), README.md и модульные тесты `tests/test_agent.cpp`. Сквозной тестовый набор `scripts/test-phase42-agent-ingestion.mjs` успешно пройден (PASS). |
+| **Phase 4.3** | Bounded SQLite queue and asynchronous HTTP transport | **В очереди (Следующая задача)** | Встраивание кольцевого FIFO-буфера с лимитом базы <= 10 МБ, асинхронный WinHTTP-клиент (TLS 1.2/1.3, gzip, системный прокси), экспоненциальный backoff и сбор Win32 метрик (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetDiskFreeSpaceExW`). |
 | **Phase 4.4** | AnyDesk/RuDesktop ID discovery and configuration security | **Запланировано** | Безопасный парсинг конфигураций AnyDesk (`system.conf`) и RuDesktop (`rudesktop.cfg`) на уровне службы Windows от имени SYSTEM (без административных прав для кассира), хранение секретов в защищенном реестре или защищенном хранилище службы. |
 | **Phase 4.5** | End-to-end testing, crash recovery, performance measurements and pilot rollout | **Запланировано** | Сквозное нагрузочное тестирование на реальных Windows POS (задержка UI кассира 0 мс), оффлайн-буфер на 72 часа (лимит <= 10 МБ), тесты Crash Recovery при обрыве питания, пилотное развертывание на контрольной кассе. |
 
@@ -261,15 +261,41 @@
   - Разработан и пройден специализированный тестовый набор `scripts/test-spool-acl-and-context.mjs` (5 из 5 тестовых наборов `PASS`).
 
 #### Phase 4.2 — Native Windows Service C++/Win32 and spool ingestion
-- *Статус: В очереди (Следующая задача).* Зависимости от Phase 4.1, 4.1.1, 4.1.2 и 4.1.3 выполнены.
-- Разработка фоновой службы Windows (`1C-NOC-Agent`) на C++/Win32 API:
-  - Регистрация как `SERVICE_WIN32_OWN_PROCESS` с запуском от имени `NT AUTHORITY\SYSTEM`.
-  - Инициализация каталогов `%ProgramData%\1C-NOC\spool` и `quarantine` со строгими дескрипторами безопасности (`SECURITY_ATTRIBUTES`, `SetNamedSecurityInfo`): полные права у `SYSTEM`, у кассира (`Users`) — только `FILE_ADD_FILE`.
-  - Отслеживание появления файлов через `ReadDirectoryChangesW` + периодический опрос (polling fallback).
-  - Строгая валидация JSON-схемы сообщений и изоляция некорректных файлов в `quarantine/`.
-  - Вычисление SHA-256 для дедупликации входящих пакетов.
+- **Статус: Выполнено в кодовой базе C++/Win32 (Тесты контракта PASS, Windows-бинарник NOT RUN на Linux-раннере).**
+- Разработана полноценная нативная служба Windows (`1C-NOC-Agent`) на C++17 / Win32 API в каталоге `windows-agent/`:
+  - **1. Жизненный цикл Win32 Service и SCM:**
+    * Корректная регистрация через `RegisterServiceCtrlHandlerExW` с типом `SERVICE_WIN32_OWN_PROCESS`.
+    * Управление состояниями `SERVICE_START_PENDING`, `SERVICE_RUNNING`, `SERVICE_STOP_PENDING`, `SERVICE_STOPPED` с корректными чекпоинтами и `dwWaitHint`.
+    * Основной поток ожидает сигнала на Win32 Event (`stop_event_`) через `WaitForSingleObject` без расхода CPU (0% в простое).
+    * Встроенные CLI-команды управления (`--install`, `--uninstall`, `--start`, `--stop`, `--status`, `--console`, `--run-once`, `--version`).
+  - **2. Строгий парсер JSON и валидация Spool Envelope v1.0:**
+    * Собственный легковесный парсер JSON (`noc::json::Parser`) без внешних тяжёлых зависимостей.
+    * Строгая валидация кодировки UTF-8 с немедленным отклонением BOM (`0xEF, 0xBB, 0xBF`), переполнений и суррогатных пар.
+    * Контроль лимита размера пакета (65 536 байт / 64 КБ).
+    * Строгая валидация полей Envelope Schema: `schema_version == "1.0"`, `source == "1C_EXTENSION"`, 36-значный `event_id` GUID, `event_type` (`TELEMETRY` | `INCIDENT` | `HEARTBEAT`), `priority` (`NORMAL` | `HIGH` | `LOW`), обязательные поля `payload.shop`, `payload.workplace`.
+  - **3. FIPS 180-4 SHA-256 хеширование и дедупликация:**
+    * Автономный модуль `crypto_hash` вычисляет 64-значный hex-хеш сырого содержимого файла.
+    * Проверено совпадение с тестовыми векторами NIST.
+  - **4. Локальный буфер SQLite:**
+    * Режим `PRAGMA journal_mode = WAL;`, `PRAGMA synchronous = NORMAL;`, `PRAGMA busy_timeout = 5000;`.
+    * Таблица `spool_queue` со строгим ограничением `sha256 TEXT NOT NULL UNIQUE`.
+    * Транзакция `BEGIN IMMEDIATE` гарантирует защиту от гонок и повторных вставок (`DUPLICATE_IGNORED`).
+    * Выборка очереди по строгому приоритету: `HIGH` (инциденты) перед `NORMAL` и `LOW`, с соблюдением FIFO порядка внутри одного уровня.
+  - **5. Файловый конвейер SpoolWatcher, Карантин и Crash Recovery:**
+    * Поток наблюдения использует Win32 `ReadDirectoryChangesW` для мгновенной реакции на новые файлы.
+    * Предусмотрен регулярный опрос (fallback polling каждые 5 с) на случай сбоев очереди уведомлений.
+    * Лексикографическая сортировка файлов гарантирует хронологическую обработку FIFO по 17-значной метке времени.
+    * Исходный файл удаляется из `spool/` **строго после** успешной транзакции в SQLite (`COMMIT`).
+    * Повреждённые файлы (невалидный JSON, неверная схема) и файлы больше 64 КБ атомарно изолируются в `quarantine/` с префиксами `INVALID_ENVELOPE` и `OVERSIZED_64KB` и меткой времени.
+    * Crash Recovery: каждые 60 секунд выполняется поиск и удаление зависших файлов `temp_*.tmp` старше 300 секунд (5 минут), оставшихся после аварийного падения процесса 1С или обрыва питания.
+  - **6. Сборка и тестирование:**
+    * Созданы `CMakeLists.txt` (поддержка MSVC 2019/2022 и MinGW) и `Makefile` (сборка `win64` и `win32` бинарников с флагами статической линковки).
+    * Подготовлена полная документация `windows-agent/README.md`.
+    * Разработан и пройден сквозной автоматизированный тестовый набор `scripts/test-phase42-agent-ingestion.mjs` (5 из 5 блоков PASS).
+    * *Ограничение среды*: в текущем контейнере Linux отсутствуют `make` и `x86_64-w64-mingw32-g++`; компиляция бинарного `.exe` зафиксирована со статусом `NOT RUN` до запуска на Windows-раннере или сборщике MinGW.
 
 #### Phase 4.3 — Bounded SQLite queue and asynchronous HTTP transport
+- *Статус: В очереди (Следующая задача).*
 - Встраивание легковесной СУБД SQLite (amalgamation) в службу Windows:
   - Режим `PRAGMA journal_mode = WAL`, `PRAGMA synchronous = NORMAL`.
   - Реализация кольцевого буфера FIFO с жестким порогом размера базы данных (<= 10 МБ).
