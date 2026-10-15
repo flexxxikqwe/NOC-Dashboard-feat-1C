@@ -33,6 +33,25 @@ struct TransportConfig {
     int max_retries = 10;                     // Порог повторов до перевода в статус FAILED
     std::string remote_type = "NONE";
     std::string remote_id = "";
+
+    bool operator==(const TransportConfig& o) const {
+        return server_url == o.server_url &&
+               token == o.token &&
+               enabled == o.enabled &&
+               allow_insecure_http == o.allow_insecure_http &&
+               poll_interval_ms == o.poll_interval_ms &&
+               resolve_timeout_ms == o.resolve_timeout_ms &&
+               connect_timeout_ms == o.connect_timeout_ms &&
+               send_timeout_ms == o.send_timeout_ms &&
+               receive_timeout_ms == o.receive_timeout_ms &&
+               max_response_bytes == o.max_response_bytes &&
+               max_retries == o.max_retries &&
+               remote_type == o.remote_type &&
+               remote_id == o.remote_id;
+    }
+    bool operator!=(const TransportConfig& o) const {
+        return !(*this == o);
+    }
 };
 
 // Результат HTTP-запроса

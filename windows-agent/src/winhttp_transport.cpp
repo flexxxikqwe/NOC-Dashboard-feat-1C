@@ -567,8 +567,14 @@ bool TransportManager::LoadConfig(const std::string& config_path, std::string& o
 
 void TransportManager::SetConfig(const TransportConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
+    bool significant_change = (config_.server_url != config.server_url) ||
+                              (config_.token != config.token) ||
+                              (config_.allow_insecure_http != config.allow_insecure_http) ||
+                              (config_.enabled != config.enabled);
     config_ = config;
-    backoff_until_ = std::chrono::steady_clock::time_point{};
+    if (significant_change) {
+        backoff_until_ = std::chrono::steady_clock::time_point{};
+    }
 }
 
 TransportConfig TransportManager::GetConfig() const {

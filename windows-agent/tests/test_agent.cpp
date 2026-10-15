@@ -782,11 +782,21 @@ void TestWinHttpTransportLogic() {
     TEST_ASSERT(mock_client->GetCallCount() == 0, "Insecure HTTP makes 0 network calls");
     TEST_ASSERT(batch_err.find("HTTPS required") != std::string::npos, "Error mentions HTTPS required");
 
-    // Проверка 6.5.3: Успешная доставка по HTTPS (HTTP 200, success: true)
-    cfg.server_url = "https://noc.company.local:3000";
+    // 6.5.2.1 Регрессия: повторный SetConfig с идентичными настройками НЕ сбрасывает backoff
     manager.SetConfig(cfg);
-    manager.ResetBackoff();
-    TEST_ASSERT(!manager.IsInBackoff(), "Backoff must be cleared for HTTPS request");
+    TEST_ASSERT(manager.IsInBackoff(), "Re-applying identical configuration must NOT reset active backoff");
+
+    // 6.5.2.2 Регрессия: изменение незначимого параметра (poll_interval_ms) НЕ сбрасывает backoff
+    cfg.poll_interval_ms = 20000;
+    manager.SetConfig(cfg);
+    TEST_ASSERT(manager.IsInBackoff(), "Changing poll_interval_ms must NOT reset active backoff");
+
+    // Проверка 6.5.3: Успешная доставка по HTTPS (HTTP 200, success: true)
+    // Изменение значимого параметра (server_url на HTTPS) сбрасывает backoff
+    cfg.server_url = "https://noc.company.local:3000";
+    cfg.poll_interval_ms = 10000;
+    manager.SetConfig(cfg);
+    TEST_ASSERT(!manager.IsInBackoff(), "Changing server_url to HTTPS must reset backoff for new endpoint");
 
     bool handler_called = false;
     std::string captured_url;
