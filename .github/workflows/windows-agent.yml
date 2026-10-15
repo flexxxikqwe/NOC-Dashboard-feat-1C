@@ -13,6 +13,9 @@ on:
       - '.github/workflows/windows-agent.yml'
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   build-and-test:
     name: Build & Test Windows Native Service (${{ matrix.arch }})
@@ -31,7 +34,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure CMake (${{ matrix.arch }})
         run: |
@@ -70,7 +73,7 @@ jobs:
 
       - name: Upload Build Artifacts and Diagnostic Logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: noc-windows-agent-${{ matrix.arch }}
           path: |

@@ -63,7 +63,9 @@ void SpoolWatcher::Stop() {
 #endif
 
     if (worker_thread_.joinable()) {
-        worker_thread_.join();
+        if (worker_thread_.get_id() != std::this_thread::get_id()) {
+            worker_thread_.join();
+        }
     }
     is_running_.store(false);
 }

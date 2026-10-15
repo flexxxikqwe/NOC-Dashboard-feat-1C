@@ -70,10 +70,11 @@ public:
 private:
     bool Execute(const char* sql, std::string& out_error);
     int64_t GetDatabaseFileSizeBytes();
+    void CloseInternal();
 
     sqlite3* db_ = nullptr;
     std::string db_path_;
-    mutable std::mutex mutex_;
+    mutable std::recursive_mutex mutex_;
 };
 
 } // namespace noc::db

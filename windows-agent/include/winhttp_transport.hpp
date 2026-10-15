@@ -78,7 +78,7 @@ public:
     explicit MockHttpClient(HandlerFunc handler) : handler_(std::move(handler)) {}
 
     void SetHandler(HandlerFunc handler) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         handler_ = std::move(handler);
     }
 
@@ -99,7 +99,7 @@ public:
     std::string GetLastToken() const;
 
 private:
-    mutable std::mutex mutex_;
+    mutable std::recursive_mutex mutex_;
     HandlerFunc handler_;
     bool aborted_ = false;
     size_t call_count_ = 0;
@@ -202,7 +202,7 @@ private:
     std::thread worker_thread_;
 
     std::chrono::steady_clock::time_point backoff_until_{};
-    mutable std::mutex mutex_;
+    mutable std::recursive_mutex mutex_;
 };
 
 } // namespace noc::transport
