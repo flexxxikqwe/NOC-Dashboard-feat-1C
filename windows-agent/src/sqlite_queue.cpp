@@ -12,7 +12,7 @@ SqliteQueue::~SqliteQueue() {
 }
 
 void SqliteQueue::Close() {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     CloseInternal();
 }
 
@@ -53,7 +53,11 @@ int64_t SqliteQueue::GetDatabaseFileSizeBytes() {
 }
 
 bool SqliteQueue::CheckIntegrity(std::string& out_error) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
+    return CheckIntegrityInternal(out_error);
+}
+
+bool SqliteQueue::CheckIntegrityInternal(std::string& out_error) {
     if (!db_) {
         out_error = "Database is not open";
         return false;
@@ -78,7 +82,7 @@ bool SqliteQueue::CheckIntegrity(std::string& out_error) {
 }
 
 bool SqliteQueue::Checkpoint(std::string& out_error) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!db_) {
         out_error = "Database is not open";
         return false;
@@ -93,7 +97,7 @@ bool SqliteQueue::Checkpoint(std::string& out_error) {
 }
 
 bool SqliteQueue::Open(const std::string& db_path, std::string& out_error) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     CloseInternal();
     db_path_ = db_path;
 
@@ -112,7 +116,7 @@ bool SqliteQueue::Open(const std::string& db_path, std::string& out_error) {
 
     // 1. Проверка целостности при открытии
     std::string integ_err;
-    if (!CheckIntegrity(integ_err)) {
+    if (!CheckIntegrityInternal(integ_err)) {
         out_error = "SQLite startup integrity check failed: " + integ_err;
         sqlite3_close_v2(db_);
         db_ = nullptr;
@@ -188,7 +192,7 @@ bool SqliteQueue::Open(const std::string& db_path, std::string& out_error) {
 }
 
 EnqueueResult SqliteQueue::Enqueue(const SpoolEnvelope& env) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     EnqueueResult res;
     if (!db_) {
         res.status = EnqueueStatus::DATABASE_ERROR;
@@ -210,7 +214,7 @@ EnqueueResult SqliteQueue::Enqueue(const SpoolEnvelope& env) {
 
     // 1. Проверка лимита размера буфера (10 МБ с учетом WAL и SHM)
     std::string cap_err;
-    EnforceCapacity(SQLITE_QUEUE_MAX_BYTES, cap_err);
+    EnforceCapacityInternal(SQLITE_QUEUE_MAX_BYTES, cap_err);
 
     // 2. Транзакция BEGIN IMMEDIATE для строгой изоляции от конкурирующих писателей
     char* err_msg = nullptr;
@@ -331,7 +335,7 @@ EnqueueResult SqliteQueue::Enqueue(const SpoolEnvelope& env) {
 }
 
 bool SqliteQueue::GetPending(size_t limit, std::vector<QueueRecord>& out_records, std::string& out_error) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     out_records.clear();
     if (!db_) { out_error = "Database is not open"; return false; }
 
@@ -376,7 +380,7 @@ bool SqliteQueue::GetPending(size_t limit, std::vector<QueueRecord>& out_records
 }
 
 bool SqliteQueue::UpdateStatus(int64_t id, const std::string& status, std::string& out_error) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!db_) { out_error = "Database is not open"; return false; }
 
     const char* kSql = "UPDATE spool_queue SET status = ? WHERE id = ?;";
@@ -400,7 +404,7 @@ bool SqliteQueue::UpdateStatus(int64_t id, const std::string& status, std::strin
 }
 
 bool SqliteQueue::IncrementRetry(int64_t id, std::string& out_error) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!db_) { out_error = "Database is not open"; return false; }
 
     const char* kSql = "UPDATE spool_queue SET retry_count = retry_count + 1 WHERE id = ?;";
@@ -422,7 +426,7 @@ bool SqliteQueue::IncrementRetry(int64_t id, std::string& out_error) {
 }
 
 bool SqliteQueue::GetStats(size_t& out_count, int64_t& out_db_bytes, std::string& out_error) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     out_count = 0;
     out_db_bytes = GetDatabaseFileSizeBytes();
 
@@ -443,7 +447,11 @@ bool SqliteQueue::GetStats(size_t& out_count, int64_t& out_db_bytes, std::string
 }
 
 bool SqliteQueue::EnforceCapacity(int64_t max_bytes, std::string& out_error) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
+    return EnforceCapacityInternal(max_bytes, out_error);
+}
+
+bool SqliteQueue::EnforceCapacityInternal(int64_t max_bytes, std::string& out_error) {
     int64_t current_size = GetDatabaseFileSizeBytes();
     if (current_size <= max_bytes) {
         return true;
@@ -486,7 +494,7 @@ bool SqliteQueue::EnforceCapacity(int64_t max_bytes, std::string& out_error) {
 }
 
 bool SqliteQueue::PruneSent(int64_t older_than_seconds, std::string& out_error) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!db_) { out_error = "Database is not open"; return false; }
 
     auto threshold = std::chrono::duration_cast<std::chrono::seconds>(

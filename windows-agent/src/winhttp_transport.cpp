@@ -171,22 +171,27 @@ HttpResponse MockHttpClient::Post(
     const std::string& json_payload,
     uint32_t /*timeout_ms*/
 ) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    call_count_++;
-    last_url_ = url;
-    last_token_ = bearer_token;
-    last_payload_ = json_payload;
+    HandlerFunc handler;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        call_count_++;
+        last_url_ = url;
+        last_token_ = bearer_token;
+        last_payload_ = json_payload;
 
-    if (aborted_) {
-        HttpResponse r;
-        r.status_code = 0;
-        r.network_error = true;
-        r.error_message = "Request aborted by shutdown";
-        return r;
+        if (aborted_) {
+            HttpResponse r;
+            r.status_code = 0;
+            r.network_error = true;
+            r.error_message = "Request aborted by shutdown";
+            return r;
+        }
+
+        handler = handler_;
     }
 
-    if (handler_) {
-        return handler_(url, bearer_token, json_payload);
+    if (handler) {
+        return handler(url, bearer_token, json_payload);
     }
 
     HttpResponse def;
@@ -196,37 +201,37 @@ HttpResponse MockHttpClient::Post(
 }
 
 void MockHttpClient::Abort() {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     aborted_ = true;
 }
 
 void MockHttpClient::ResetAbort() {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     aborted_ = false;
 }
 
 bool MockHttpClient::IsAborted() const {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     return aborted_;
 }
 
 size_t MockHttpClient::GetCallCount() const {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     return call_count_;
 }
 
 std::string MockHttpClient::GetLastUrl() const {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     return last_url_;
 }
 
 std::string MockHttpClient::GetLastPayload() const {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     return last_payload_;
 }
 
 std::string MockHttpClient::GetLastToken() const {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     return last_token_;
 }
 
@@ -476,7 +481,7 @@ TransportManager::~TransportManager() {
 }
 
 bool TransportManager::LoadConfig(const std::string& config_path, std::string& out_error) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
 
     // 1. Попытка чтения config.json
     if (!config_path.empty()) {
@@ -561,13 +566,19 @@ bool TransportManager::LoadConfig(const std::string& config_path, std::string& o
 }
 
 void TransportManager::SetConfig(const TransportConfig& config) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     config_ = config;
+    backoff_until_ = std::chrono::steady_clock::time_point{};
 }
 
 TransportConfig TransportManager::GetConfig() const {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     return config_;
+}
+
+void TransportManager::ResetBackoff() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    backoff_until_ = std::chrono::steady_clock::time_point{};
 }
 
 int TransportManager::CalculateBackoffSeconds(int retry_count, int retry_after_header) {
@@ -580,12 +591,12 @@ int TransportManager::CalculateBackoffSeconds(int retry_count, int retry_after_h
 }
 
 bool TransportManager::IsInBackoff() const {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     return std::chrono::steady_clock::now() < backoff_until_;
 }
 
 int TransportManager::GetRemainingBackoffSeconds() const {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     auto now = std::chrono::steady_clock::now();
     if (now >= backoff_until_) return 0;
     return static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(backoff_until_ - now).count());
@@ -594,7 +605,7 @@ int TransportManager::GetRemainingBackoffSeconds() const {
 size_t TransportManager::ProcessPendingBatch(std::string& out_error) {
     TransportConfig cfg;
     {
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
         cfg = config_;
         if (!cfg.enabled) {
             return 0; // Транспорт выключен по умолчанию
@@ -622,7 +633,7 @@ size_t TransportManager::ProcessPendingBatch(std::string& out_error) {
     if (endpoint_url.rfind("http://", 0) == 0 && !cfg.allow_insecure_http) {
         out_error = "Refusing to transmit telemetry over plain HTTP: HTTPS required";
         Log(LogLevel::ERROR_LVL, out_error);
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
         backoff_until_ = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         return 0;
     }
@@ -703,7 +714,7 @@ size_t TransportManager::ProcessPendingBatch(std::string& out_error) {
                                     ". Please check configured NOC_TOKEN. Event remains in queue.");
             queue_.IncrementRetry(record.id, q_err);
             // Устанавливаем бэкофф на 60 секунд, чтобы не спамить сервер
-            std::lock_guard<std::recursive_mutex> lock(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
             backoff_until_ = std::chrono::steady_clock::now() + std::chrono::seconds(60);
             break;
 
@@ -714,7 +725,7 @@ size_t TransportManager::ProcessPendingBatch(std::string& out_error) {
                                     std::to_string(resp.retry_after_seconds) + "s. Backing off for " + 
                                     std::to_string(backoff_sec) + "s.");
             queue_.IncrementRetry(record.id, q_err);
-            std::lock_guard<std::recursive_mutex> lock(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
             backoff_until_ = std::chrono::steady_clock::now() + std::chrono::seconds(backoff_sec);
             break;
 
@@ -738,7 +749,7 @@ size_t TransportManager::ProcessPendingBatch(std::string& out_error) {
                                     ": " + err_desc + ". Retry count=" + std::to_string(record.retry_count + 1) + 
                                     ". Backoff=" + std::to_string(backoff_sec) + "s.");
             queue_.IncrementRetry(record.id, q_err);
-            std::lock_guard<std::recursive_mutex> lock(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
             backoff_until_ = std::chrono::steady_clock::now() + std::chrono::seconds(backoff_sec);
             break;
         }
@@ -751,7 +762,7 @@ void TransportManager::Start() {
     if (is_running_.load()) return;
 
     {
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
         if (!config_.enabled) {
             Log(LogLevel::INFO_LVL, "WinHTTP transport is disabled by default (Phase 4.3 Safe Rollout). "
                                     "Set enable_http_transport=true in config.json or NOC_ENABLE_HTTP_TRANSPORT=1 to activate.");
@@ -789,7 +800,7 @@ void TransportManager::WorkerLoop() {
 
         uint32_t interval_ms = 10000;
         {
-            std::lock_guard<std::recursive_mutex> lock(mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
             interval_ms = config_.poll_interval_ms;
         }
 

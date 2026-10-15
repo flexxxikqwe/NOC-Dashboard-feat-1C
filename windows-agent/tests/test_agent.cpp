@@ -785,6 +785,8 @@ void TestWinHttpTransportLogic() {
     // Проверка 6.5.3: Успешная доставка по HTTPS (HTTP 200, success: true)
     cfg.server_url = "https://noc.company.local:3000";
     manager.SetConfig(cfg);
+    manager.ResetBackoff();
+    TEST_ASSERT(!manager.IsInBackoff(), "Backoff must be cleared for HTTPS request");
 
     bool handler_called = false;
     std::string captured_url;

@@ -71,10 +71,12 @@ private:
     bool Execute(const char* sql, std::string& out_error);
     int64_t GetDatabaseFileSizeBytes();
     void CloseInternal();
+    bool CheckIntegrityInternal(std::string& out_error);
+    bool EnforceCapacityInternal(int64_t max_bytes, std::string& out_error);
 
     sqlite3* db_ = nullptr;
     std::string db_path_;
-    mutable std::recursive_mutex mutex_;
+    mutable std::mutex mutex_;
 };
 
 } // namespace noc::db

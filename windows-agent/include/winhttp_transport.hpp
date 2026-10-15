@@ -78,7 +78,7 @@ public:
     explicit MockHttpClient(HandlerFunc handler) : handler_(std::move(handler)) {}
 
     void SetHandler(HandlerFunc handler) {
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
         handler_ = std::move(handler);
     }
 
@@ -99,7 +99,7 @@ public:
     std::string GetLastToken() const;
 
 private:
-    mutable std::recursive_mutex mutex_;
+    mutable std::mutex mutex_;
     HandlerFunc handler_;
     bool aborted_ = false;
     size_t call_count_ = 0;
@@ -186,9 +186,10 @@ public:
     // Расчет экспоненциального бэкоффа: min(2^min(retry, 6) * 5, 300) секунд
     static int CalculateBackoffSeconds(int retry_count, int retry_after_header = 0);
 
-    // Проверка активности режима ожидания (backoff)
+    // Проверка активности режима ожидания (backoff) и его сброс
     bool IsInBackoff() const;
     int GetRemainingBackoffSeconds() const;
+    void ResetBackoff();
 
 private:
     void WorkerLoop();
@@ -202,7 +203,7 @@ private:
     std::thread worker_thread_;
 
     std::chrono::steady_clock::time_point backoff_until_{};
-    mutable std::recursive_mutex mutex_;
+    mutable std::mutex mutex_;
 };
 
 } // namespace noc::transport
